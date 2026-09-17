@@ -56,6 +56,7 @@ jobs:
           cat > gradle.properties <<'EOF'
           org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
           android.useAndroidX=true
+          kotlin.code.style=official
           EOF
 
           cat > app/build.gradle <<'EOF'
@@ -75,6 +76,15 @@ jobs:
                   versionCode 1
                   versionName '1.0.0'
               }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+
+              kotlinOptions {
+                  jvmTarget = '17'
+              }
           }
 
           dependencies {
@@ -93,7 +103,8 @@ jobs:
               <application
                   android:theme="@style/AppTheme"
                   android:label="@string/app_name"
-                  android:allowBackup="true">
+                  android:allowBackup="true"
+                  android:supportsRtl="true">
 
                   <activity
                       android:name=".MainActivity"
@@ -121,9 +132,12 @@ jobs:
           <resources>
               <style name="AppTheme"
                   parent="Theme.AppCompat.Light.NoActionBar">
+
                   <item name="android:fontFamily">sans</item>
                   <item name="android:windowLightStatusBar">true</item>
                   <item name="android:statusBarColor">#FFFFFF</item>
+                  <item name="android:navigationBarColor">#FFFFFF</item>
+
               </style>
           </resources>
           EOF
@@ -144,24 +158,41 @@ jobs:
                   super.onCreate(savedInstanceState)
 
                   val layout = LinearLayout(this)
+
                   layout.orientation = LinearLayout.VERTICAL
                   layout.gravity = Gravity.CENTER
                   layout.setPadding(32, 32, 32, 32)
+                  layout.setBackgroundColor(Color.WHITE)
 
                   val title = TextView(this)
+
                   title.text = "FOREX ALERT"
                   title.textSize = 28f
                   title.setTextColor(Color.BLACK)
                   title.gravity = Gravity.CENTER
 
                   val status = TextView(this)
+
                   status.text = "App is working"
                   status.textSize = 18f
                   status.setTextColor(Color.DKGRAY)
                   status.gravity = Gravity.CENTER
 
-                  layout.addView(title)
-                  layout.addView(status)
+                  layout.addView(
+                      title,
+                      LinearLayout.LayoutParams(
+                          LinearLayout.LayoutParams.MATCH_PARENT,
+                          LinearLayout.LayoutParams.WRAP_CONTENT
+                      )
+                  )
+
+                  layout.addView(
+                      status,
+                      LinearLayout.LayoutParams(
+                          LinearLayout.LayoutParams.MATCH_PARENT,
+                          LinearLayout.LayoutParams.WRAP_CONTENT
+                      )
+                  )
 
                   setContentView(layout)
               }
@@ -170,6 +201,9 @@ jobs:
 
       - name: Generate Gradle wrapper
         run: gradle wrapper --gradle-version 8.9
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
 
       - name: Build APK
         run: ./gradlew assembleDebug
