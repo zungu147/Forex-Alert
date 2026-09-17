@@ -96,6 +96,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
 
         createNotificationChannel()
+
         loadAlerts()
         loadHistory()
 
@@ -309,6 +310,10 @@ class MainActivity : Activity() {
             )
         )
 
+        /*
+         * TARGET PRICE
+         */
+
         targetInput = EditText(this)
 
         targetInput.hint = "Target price"
@@ -326,6 +331,10 @@ class MainActivity : Activity() {
                 topMargin = 10
             }
         )
+
+        /*
+         * ADD ALERT
+         */
 
         val addButton = Button(this)
 
@@ -379,7 +388,7 @@ class MainActivity : Activity() {
         )
 
         /*
-         * HISTORY
+         * ALERT HISTORY
          */
 
         val historyTitle = TextView(this)
@@ -410,6 +419,10 @@ class MainActivity : Activity() {
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
         )
+
+        /*
+         * CLEAR HISTORY
+         */
 
         val clearHistoryButton = Button(this)
 
@@ -476,7 +489,11 @@ class MainActivity : Activity() {
         val target =
             targetText.toDoubleOrNull()
 
-        if (target == null || target <= 0) {
+        if (
+            target == null ||
+            !target.isFinite() ||
+            target <= 0
+        ) {
 
             Toast.makeText(
                 this,
@@ -496,12 +513,15 @@ class MainActivity : Activity() {
             condition = condition,
             target = target,
             enabled = true,
-            triggered = false
+            triggered = false,
+            triggeredPrice = Double.NaN,
+            triggeredTime = 0L
         )
 
         alerts.add(alert)
 
         saveAlerts()
+
         refreshAlertList()
 
         targetInput.text.clear()
@@ -536,7 +556,9 @@ class MainActivity : Activity() {
             emptyText.textSize = 16f
             emptyText.setTextColor(Color.GRAY)
 
-            alertContainer.addView(emptyText)
+            alertContainer.addView(
+                emptyText
+            )
 
             return
         }
@@ -617,6 +639,7 @@ class MainActivity : Activity() {
                     alert.enabled = true
 
                     saveAlerts()
+
                     refreshAlertList()
 
                     Toast.makeText(
@@ -652,6 +675,7 @@ class MainActivity : Activity() {
                         !alert.enabled
 
                     saveAlerts()
+
                     refreshAlertList()
                 }
 
@@ -677,6 +701,7 @@ class MainActivity : Activity() {
                 }
 
                 saveAlerts()
+
                 refreshAlertList()
             }
 
@@ -720,7 +745,9 @@ class MainActivity : Activity() {
             emptyText.textSize = 16f
             emptyText.setTextColor(Color.GRAY)
 
-            historyContainer.addView(emptyText)
+            historyContainer.addView(
+                emptyText
+            )
 
             return
         }
@@ -733,7 +760,7 @@ class MainActivity : Activity() {
                 "${displaySymbol(item.symbol)}\n" +
                 "${item.condition} ${formatPrice(item.target)}\n" +
                 "Triggered price: ${formatPrice(item.triggeredPrice)}\n" +
-                "${formatTime(item.triggeredTime)}"
+                formatTime(item.triggeredTime)
 
             historyText.textSize = 15f
             historyText.setTextColor(Color.DKGRAY)
@@ -752,6 +779,10 @@ class MainActivity : Activity() {
     }
 
     private fun checkAlerts(price: Double) {
+
+        if (!price.isFinite()) {
+            return
+        }
 
         var changed = false
 
@@ -817,7 +848,9 @@ class MainActivity : Activity() {
 
                     Toast.makeText(
                         this,
-                        "${displaySymbol(alert.symbol)} ${alert.condition} ${formatPrice(alert.target)}",
+                        "${displaySymbol(alert.symbol)} " +
+                        "${alert.condition} " +
+                        "${formatPrice(alert.target)}",
                         Toast.LENGTH_LONG
                     ).show()
                 }
@@ -1153,7 +1186,7 @@ class MainActivity : Activity() {
                     Double.NaN
                 )
 
-            if (quote.isNaN()) {
+            if (!quote.isFinite()) {
                 return
             }
 
@@ -1237,65 +1270,97 @@ class MainActivity : Activity() {
             ?: symbol
     }
 
+    /*
+     * SAVE ALERTS
+     *
+     * IMPORTANT:
+     * JSON does not accept NaN or Infinity.
+     * Therefore an alert that has not triggered
+     * stores triggeredPrice as JSON null.
+     */
+
     private fun saveAlerts() {
 
-        val array =
-            JSONArray()
+        try {
 
-        for (alert in alerts) {
+            val array =
+                JSONArray()
 
-            val item =
-                JSONObject()
+            for (alert in alerts) {
 
-            item.put(
-                "id",
-                alert.id
-            )
+                val item =
+                    JSONObject()
 
-            item.put(
-                "symbol",
-                alert.symbol
-            )
+                item.put(
+                    "id",
+                    alert.id
+                )
 
-            item.put(
-                "condition",
-                alert.condition
-            )
+                item.put(
+                    "symbol",
+                    alert.symbol
+                )
 
-            item.put(
-                "target",
-                alert.target
-            )
+                item.put(
+                    "condition",
+                    alert.condition
+                )
 
-            item.put(
-                "enabled",
-                alert.enabled
-            )
+                item.put(
+                    "target",
+                    alert.target
+                )
 
-            item.put(
-                "triggered",
-                alert.triggered
-            )
+                item.put(
+                    "enabled",
+                    alert.enabled
+                )
 
-            item.put(
-                "triggeredPrice",
-                alert.triggeredPrice
-            )
+                item.put(
+                    "triggered",
+                    alert.triggered
+                )
 
-            item.put(
-                "triggeredTime",
-                alert.triggeredTime
-            )
+                if (
+                    alert.triggeredPrice.isFinite()
+                ) {
 
-            array.put(item)
+                    item.put(
+                        "triggeredPrice",
+                        alert.triggeredPrice
+                    )
+
+                } else {
+
+                    item.put(
+                        "triggeredPrice",
+                        JSONObject.NULL
+                    )
+                }
+
+                item.put(
+                    "triggeredTime",
+                    alert.triggeredTime
+                )
+
+                array.put(item)
+            }
+
+            preferences.edit()
+                .putString(
+                    "alerts",
+                    array.toString()
+                )
+                .apply()
+
+        } catch (_: Exception) {
+
+            Toast.makeText(
+                this,
+                "Could not save alert",
+                Toast.LENGTH_SHORT
+            ).show()
         }
-
-        preferences.edit()
-            .putString(
-                "alerts",
-                array.toString()
-            )
-            .apply()
     }
 
     private fun loadAlerts() {
@@ -1315,6 +1380,22 @@ class MainActivity : Activity() {
 
                 val item =
                     array.getJSONObject(i)
+
+                val triggeredPrice =
+                    if (
+                        item.has("triggeredPrice") &&
+                        !item.isNull("triggeredPrice")
+                    ) {
+
+                        item.optDouble(
+                            "triggeredPrice",
+                            Double.NaN
+                        )
+
+                    } else {
+
+                        Double.NaN
+                    }
 
                 alerts.add(
                     PriceAlert(
@@ -1337,10 +1418,7 @@ class MainActivity : Activity() {
                             item.getBoolean("triggered"),
 
                         triggeredPrice =
-                            item.optDouble(
-                                "triggeredPrice",
-                                Double.NaN
-                            ),
+                            triggeredPrice,
 
                         triggeredTime =
                             item.optLong(
@@ -1355,57 +1433,74 @@ class MainActivity : Activity() {
         }
     }
 
+    /*
+     * SAVE HISTORY
+     */
+
     private fun saveHistory() {
 
-        val array =
-            JSONArray()
+        try {
 
-        for (item in history) {
+            val array =
+                JSONArray()
 
-            val objectItem =
-                JSONObject()
+            for (item in history) {
 
-            objectItem.put(
-                "id",
-                item.id
-            )
+                if (!item.triggeredPrice.isFinite()) {
+                    continue
+                }
 
-            objectItem.put(
-                "symbol",
-                item.symbol
-            )
+                val objectItem =
+                    JSONObject()
 
-            objectItem.put(
-                "condition",
-                item.condition
-            )
+                objectItem.put(
+                    "id",
+                    item.id
+                )
 
-            objectItem.put(
-                "target",
-                item.target
-            )
+                objectItem.put(
+                    "symbol",
+                    item.symbol
+                )
 
-            objectItem.put(
-                "triggeredPrice",
-                item.triggeredPrice
-            )
+                objectItem.put(
+                    "condition",
+                    item.condition
+                )
 
-            objectItem.put(
-                "triggeredTime",
-                item.triggeredTime
-            )
+                objectItem.put(
+                    "target",
+                    item.target
+                )
 
-            array.put(
-                objectItem
-            )
+                objectItem.put(
+                    "triggeredPrice",
+                    item.triggeredPrice
+                )
+
+                objectItem.put(
+                    "triggeredTime",
+                    item.triggeredTime
+                )
+
+                array.put(objectItem)
+            }
+
+            preferences.edit()
+                .putString(
+                    "history",
+                    array.toString()
+                )
+                .apply()
+
+        } catch (_: Exception) {
+
+            Toast.makeText(
+                this,
+                "Could not save history",
+                Toast.LENGTH_SHORT
+            ).show()
         }
-
-        preferences.edit()
-            .putString(
-                "history",
-                array.toString()
-            )
-            .apply()
     }
 
     private fun loadHistory() {
@@ -1426,6 +1521,16 @@ class MainActivity : Activity() {
                 val item =
                     array.getJSONObject(i)
 
+                val triggeredPrice =
+                    item.optDouble(
+                        "triggeredPrice",
+                        Double.NaN
+                    )
+
+                if (!triggeredPrice.isFinite()) {
+                    continue
+                }
+
                 history.add(
                     AlertHistory(
                         id =
@@ -1441,9 +1546,7 @@ class MainActivity : Activity() {
                             item.getDouble("target"),
 
                         triggeredPrice =
-                            item.getDouble(
-                                "triggeredPrice"
-                            ),
+                            triggeredPrice,
 
                         triggeredTime =
                             item.getLong(
