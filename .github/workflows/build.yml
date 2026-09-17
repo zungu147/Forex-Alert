@@ -8,6 +8,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -22,6 +23,7 @@ jobs:
 
       - name: Create Android project
         run: |
+
           mkdir -p app/src/main/java/com/forexalert/app
           mkdir -p app/src/main/res/values
 
@@ -36,6 +38,7 @@ jobs:
 
           dependencyResolutionManagement {
               repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+
               repositories {
                   google()
                   mavenCentral()
@@ -43,8 +46,10 @@ jobs:
           }
 
           rootProject.name = "ForexAlert"
+
           include ':app'
           EOF
+
 
           cat > build.gradle <<'EOF'
           plugins {
@@ -53,11 +58,13 @@ jobs:
           }
           EOF
 
+
           cat > gradle.properties <<'EOF'
           org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
           android.useAndroidX=true
           kotlin.code.style=official
           EOF
+
 
           cat > app/build.gradle <<'EOF'
           plugins {
@@ -66,96 +73,2814 @@ jobs:
           }
 
           android {
+
               namespace 'com.forexalert.app'
+
               compileSdk 35
 
               defaultConfig {
+
                   applicationId 'com.forexalert.app'
+
                   minSdk 23
+
                   targetSdk 35
-                  versionCode 4
-                  versionName '1.3.0'
+
+                  versionCode 3
+
+                  versionName '1.2.0'
               }
 
               compileOptions {
+
                   sourceCompatibility JavaVersion.VERSION_17
+
                   targetCompatibility JavaVersion.VERSION_17
               }
 
               kotlinOptions {
+
                   jvmTarget = '17'
               }
           }
 
           dependencies {
+
               implementation 'androidx.core:core-ktx:1.15.0'
+
               implementation 'androidx.appcompat:appcompat:1.7.0'
+
               implementation 'com.squareup.okhttp3:okhttp:4.12.0'
           }
           EOF
 
+
           cat > app/src/main/AndroidManifest.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-              <uses-permission android:name="android.permission.INTERNET" />
+          <manifest
+              xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission
+                  android:name="android.permission.INTERNET" />
 
               <uses-permission
                   android:name="android.permission.POST_NOTIFICATIONS" />
 
+              <uses-permission
+                  android:name="android.permission.FOREGROUND_SERVICE" />
+
+              <uses-permission
+                  android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+
               <application
+
                   android:theme="@style/AppTheme"
+
                   android:label="@string/app_name"
+
                   android:allowBackup="true"
+
                   android:supportsRtl="true">
 
+
                   <activity
+
                       android:name=".MainActivity"
+
                       android:exported="true">
 
                       <intent-filter>
-                          <action android:name="android.intent.action.MAIN" />
-                          <category android:name="android.intent.category.LAUNCHER" />
+
+                          <action
+                              android:name="android.intent.action.MAIN" />
+
+                          <category
+                              android:name="android.intent.category.LAUNCHER" />
+
                       </intent-filter>
 
                   </activity>
+
+
+                  <service
+
+                      android:name=".ForexAlertService"
+
+                      android:exported="false"
+
+                      android:foregroundServiceType="specialUse">
+
+                      <property
+
+                          android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+
+                          android:value="Continuous real-time Forex market price monitoring for user-created price alerts." />
+
+                  </service>
+
 
               </application>
 
           </manifest>
           EOF
 
+
           cat > app/src/main/res/values/strings.xml <<'EOF'
           <resources>
+
               <string name="app_name">Forex Alert</string>
+
           </resources>
           EOF
+
 
           cat > app/src/main/res/values/themes.xml <<'EOF'
           <resources>
-              <style name="AppTheme"
+
+              <style
+                  name="AppTheme"
                   parent="Theme.AppCompat.Light.NoActionBar">
 
                   <item name="android:fontFamily">sans</item>
+
                   <item name="android:windowLightStatusBar">true</item>
+
                   <item name="android:statusBarColor">#FFFFFF</item>
+
                   <item name="android:navigationBarColor">#FFFFFF</item>
 
               </style>
+
           </resources>
           EOF
+
+
+          cat > app/src/main/java/com/forexalert/app/ForexAlertService.kt <<'EOF'
+          package com.forexalert.app
+
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.PendingIntent
+          import android.app.Service
+          import android.content.Intent
+          import android.os.Build
+          import android.os.IBinder
+          import android.graphics.Color
+          import android.media.RingtoneManager
+          import okhttp3.OkHttpClient
+          import okhttp3.Request
+          import okhttp3.Response
+          import okhttp3.WebSocket
+          import okhttp3.WebSocketListener
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.util.concurrent.TimeUnit
+          import kotlin.math.abs
+
+
+          class ForexAlertService : Service() {
+
+              companion object {
+
+                  const val ACTION_SYMBOL_CHANGED =
+                      "com.forexalert.app.SYMBOL_CHANGED"
+
+                  const val ACTION_PRICE_UPDATE =
+                      "com.forexalert.app.PRICE_UPDATE"
+
+                  const val ACTION_ALERT_UPDATE =
+                      "com.forexalert.app.ALERT_UPDATE"
+
+                  const val EXTRA_SYMBOL =
+                      "symbol"
+
+                  const val EXTRA_PRICE =
+                      "price"
+
+                  private const val CHANNEL_ID =
+                      "forex_monitoring"
+
+                  private const val ALERT_CHANNEL_ID =
+                      "forex_alerts"
+
+                  private const val FOREGROUND_ID =
+                      5001
+
+              }
+
+
+              private val preferences by lazy {
+
+                  getSharedPreferences(
+                      "forex_alert_preferences",
+                      MODE_PRIVATE
+                  )
+              }
+
+
+              private val client =
+                  OkHttpClient.Builder()
+
+                      .connectTimeout(
+                          15,
+                          TimeUnit.SECONDS
+                      )
+
+                      .readTimeout(
+                          0,
+                          TimeUnit.MILLISECONDS
+                      )
+
+                      .writeTimeout(
+                          15,
+                          TimeUnit.SECONDS
+                      )
+
+                      .pingInterval(
+                          30,
+                          TimeUnit.SECONDS
+                      )
+
+                      .build()
+
+
+              private var webSocket: WebSocket? = null
+
+              private var currentSymbol =
+                  "frxEURUSD"
+
+
+              override fun onCreate() {
+
+                  super.onCreate()
+
+                  createNotificationChannels()
+
+                  startMonitoringNotification()
+
+                  currentSymbol =
+                      preferences.getString(
+                          "selected_symbol",
+                          "frxEURUSD"
+                      ) ?: "frxEURUSD"
+
+                  connect()
+              }
+
+
+              override fun onStartCommand(
+                  intent: Intent?,
+                  flags: Int,
+                  startId: Int
+              ): Int {
+
+                  if (
+                      intent?.action ==
+                      ACTION_SYMBOL_CHANGED
+                  ) {
+
+                      val newSymbol =
+                          intent.getStringExtra(
+                              EXTRA_SYMBOL
+                          )
+
+                      if (
+                          !newSymbol.isNullOrEmpty() &&
+                          newSymbol != currentSymbol
+                      ) {
+
+                          currentSymbol =
+                              newSymbol
+
+                          webSocket?.close(
+                              1000,
+                              "Changing symbol"
+                          )
+
+                          connect()
+                      }
+                  }
+
+                  return START_STICKY
+              }
+
+
+              private fun startMonitoringNotification() {
+
+                  val intent =
+                      Intent(
+                          this,
+                          MainActivity::class.java
+                      )
+
+                  val pendingIntent =
+                      PendingIntent.getActivity(
+                          this,
+                          7000,
+                          intent,
+                          PendingIntent.FLAG_UPDATE_CURRENT or
+                              PendingIntent.FLAG_IMMUTABLE
+                      )
+
+
+                  val notification =
+                      Notification.Builder(
+                          this,
+                          CHANNEL_ID
+                      )
+
+                          .setSmallIcon(
+                              android.R.drawable.ic_popup_sync
+                          )
+
+                          .setContentTitle(
+                              "Forex Alert"
+                          )
+
+                          .setContentText(
+                              "Monitoring Forex price alerts"
+                          )
+
+                          .setContentIntent(
+                              pendingIntent
+                          )
+
+                          .setOngoing(true)
+
+                          .setShowWhen(false)
+
+                          .setColor(
+                              Color.rgb(
+                                  0,
+                                  120,
+                                  215
+                              )
+                          )
+
+                          .build()
+
+
+                  if (
+                      Build.VERSION.SDK_INT >=
+                      Build.VERSION_CODES.Q
+                  ) {
+
+                      startForeground(
+                          FOREGROUND_ID,
+                          notification,
+                          android.content.pm.ServiceInfo
+                              .FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                      )
+
+                  } else {
+
+                      startForeground(
+                          FOREGROUND_ID,
+                          notification
+                      )
+                  }
+              }
+
+
+              private fun connect() {
+
+                  val request =
+                      Request.Builder()
+
+                          .url(
+                              "wss://ws.binaryws.com/websockets/v3"
+                          )
+
+                          .build()
+
+
+                  webSocket =
+                      client.newWebSocket(
+                          request,
+                          object :
+                              WebSocketListener() {
+
+                              override fun onOpen(
+                                  webSocket: WebSocket,
+                                  response: Response
+                              ) {
+
+                                  subscribe()
+                              }
+
+
+                              override fun onMessage(
+                                  webSocket: WebSocket,
+                                  text: String
+                              ) {
+
+                                  processMessage(
+                                      text
+                                  )
+                              }
+
+
+                              override fun onFailure(
+                                  webSocket: WebSocket,
+                                  t: Throwable,
+                                  response: Response?
+                              ) {
+
+                                  reconnectLater()
+                              }
+
+
+                              override fun onClosed(
+                                  webSocket: WebSocket,
+                                  code: Int,
+                                  reason: String
+                              ) {
+
+                                  if (
+                                      code != 1000
+                                  ) {
+
+                                      reconnectLater()
+                                  }
+                              }
+                          }
+                      )
+              }
+
+
+              private fun reconnectLater() {
+
+                  Thread {
+
+                      try {
+
+                          Thread.sleep(
+                              5000
+                          )
+
+                      } catch (
+                          _: InterruptedException
+                      ) {
+                      }
+
+                      if (
+                          !isDestroyed
+                      ) {
+
+                          connect()
+                      }
+
+                  }.start()
+              }
+
+
+              private fun subscribe() {
+
+                  val request =
+                      JSONObject()
+
+                  request.put(
+                      "ticks",
+                      currentSymbol
+                  )
+
+                  request.put(
+                      "subscribe",
+                      1
+                  )
+
+                  webSocket?.send(
+                      request.toString()
+                  )
+              }
+
+
+              private fun processMessage(
+                  message: String
+              ) {
+
+                  try {
+
+                      val json =
+                          JSONObject(
+                              message
+                          )
+
+                      if (
+                          json.has("error")
+                      ) {
+                          return
+                      }
+
+
+                      if (
+                          json.optString(
+                              "msg_type"
+                          ) != "tick"
+                      ) {
+                          return
+                      }
+
+
+                      val tick =
+                          json.optJSONObject(
+                              "tick"
+                          ) ?: return
+
+
+                      val symbol =
+                          tick.optString(
+                              "symbol"
+                          )
+
+
+                      if (
+                          symbol != currentSymbol
+                      ) {
+                          return
+                      }
+
+
+                      val price =
+                          tick.optDouble(
+                              "quote",
+                              Double.NaN
+                          )
+
+
+                      if (
+                          !price.isFinite()
+                      ) {
+                          return
+                      }
+
+
+                      sendPriceUpdate(
+                          symbol,
+                          price
+                      )
+
+
+                      checkAlerts(
+                          symbol,
+                          price
+                      )
+
+                  } catch (
+                      _: Exception
+                  ) {
+                  }
+              }
+
+
+              private fun sendPriceUpdate(
+                  symbol: String,
+                  price: Double
+              ) {
+
+                  val intent =
+                      Intent(
+                          ACTION_PRICE_UPDATE
+                      )
+
+                  intent.setPackage(
+                      packageName
+                  )
+
+                  intent.putExtra(
+                      EXTRA_SYMBOL,
+                      symbol
+                  )
+
+                  intent.putExtra(
+                      EXTRA_PRICE,
+                      price
+                  )
+
+                  sendBroadcast(
+                      intent
+                  )
+              }
+
+
+              private fun checkAlerts(
+                  symbol: String,
+                  price: Double
+              ) {
+
+                  val saved =
+                      preferences.getString(
+                          "alerts",
+                          null
+                      ) ?: return
+
+
+                  try {
+
+                      val array =
+                          JSONArray(
+                              saved
+                          )
+
+                      var changed =
+                          false
+
+
+                      for (
+                          i in 0 until array.length()
+                      ) {
+
+                          val item =
+                              array.getJSONObject(i)
+
+
+                          if (
+                              item.optString(
+                                  "symbol"
+                              ) != symbol
+                          ) {
+                              continue
+                          }
+
+
+                          if (
+                              !item.optBoolean(
+                                  "enabled",
+                                  false
+                              )
+                          ) {
+                              continue
+                          }
+
+
+                          if (
+                              item.optBoolean(
+                                  "triggered",
+                                  false
+                              )
+                          ) {
+                              continue
+                          }
+
+
+                          val condition =
+                              item.optString(
+                                  "condition"
+                              )
+
+
+                          val target =
+                              item.optDouble(
+                                  "target",
+                                  Double.NaN
+                              )
+
+
+                          if (
+                              !target.isFinite()
+                          ) {
+                              continue
+                          }
+
+
+                          val triggered =
+                              when (condition) {
+
+                                  "Above" ->
+                                      price >= target
+
+                                  "Below" ->
+                                      price <= target
+
+                                  "Touch" ->
+                                      abs(
+                                          price - target
+                                      ) <=
+                                          touchTolerance(
+                                              symbol
+                                          )
+
+                                  else ->
+                                      false
+                              }
+
+
+                          if (!triggered) {
+                              continue
+                          }
+
+
+                          val triggerTime =
+                              System.currentTimeMillis()
+
+
+                          item.put(
+                              "triggered",
+                              true
+                          )
+
+                          item.put(
+                              "triggeredPrice",
+                              price
+                          )
+
+                          item.put(
+                              "triggeredTime",
+                              triggerTime
+                          )
+
+
+                          addHistory(
+                              item,
+                              price,
+                              triggerTime
+                          )
+
+
+                          showAlertNotification(
+                              item,
+                              price
+                          )
+
+
+                          changed =
+                              true
+                      }
+
+
+                      if (changed) {
+
+                          preferences.edit()
+
+                              .putString(
+                                  "alerts",
+                                  array.toString()
+                              )
+
+                              .apply()
+
+
+                          sendBroadcast(
+                              Intent(
+                                  ACTION_ALERT_UPDATE
+                              ).apply {
+                                  setPackage(
+                                      packageName
+                                  )
+                              }
+                          )
+                      }
+
+                  } catch (
+                      _: Exception
+                  ) {
+                  }
+              }
+
+
+              private fun addHistory(
+                  alert: JSONObject,
+                  price: Double,
+                  time: Long
+              ) {
+
+                  try {
+
+                      val saved =
+                          preferences.getString(
+                              "history",
+                              null
+                          )
+
+
+                      val array =
+                          if (
+                              saved.isNullOrEmpty()
+                          ) {
+
+                              JSONArray()
+
+                          } else {
+
+                              JSONArray(
+                                  saved
+                              )
+                          }
+
+
+                      val history =
+                          JSONObject()
+
+
+                      history.put(
+                          "id",
+                          alert.optLong(
+                              "id"
+                          )
+                      )
+
+                      history.put(
+                          "symbol",
+                          alert.optString(
+                              "symbol"
+                          )
+                      )
+
+                      history.put(
+                          "condition",
+                          alert.optString(
+                              "condition"
+                          )
+                      )
+
+                      history.put(
+                          "target",
+                          alert.optDouble(
+                              "target"
+                          )
+                      )
+
+                      history.put(
+                          "triggeredPrice",
+                          price
+                      )
+
+                      history.put(
+                          "triggeredTime",
+                          time
+                      )
+
+
+                      array.put(
+                          history
+                      )
+
+
+                      preferences.edit()
+
+                          .putString(
+                              "history",
+                              array.toString()
+                          )
+
+                          .apply()
+
+                  } catch (
+                      _: Exception
+                  ) {
+                  }
+              }
+
+
+              private fun showAlertNotification(
+                  alert: JSONObject,
+                  price: Double
+              ) {
+
+                  val manager =
+                      getSystemService(
+                          NOTIFICATION_SERVICE
+                      ) as NotificationManager
+
+
+                  val intent =
+                      Intent(
+                          this,
+                          MainActivity::class.java
+                      )
+
+
+                  val pendingIntent =
+                      PendingIntent.getActivity(
+                          this,
+                          alert.optLong(
+                              "id"
+                          ).toInt(),
+                          intent,
+                          PendingIntent.FLAG_UPDATE_CURRENT or
+                              PendingIntent.FLAG_IMMUTABLE
+                      )
+
+
+                  val symbol =
+                      displaySymbol(
+                          alert.optString(
+                              "symbol"
+                          )
+                      )
+
+
+                  val condition =
+                      alert.optString(
+                          "condition"
+                      )
+
+
+                  val target =
+                      alert.optDouble(
+                          "target"
+                      )
+
+
+                  val notification =
+                      Notification.Builder(
+                          this,
+                          ALERT_CHANNEL_ID
+                      )
+
+                          .setSmallIcon(
+                              android.R.drawable.ic_dialog_info
+                          )
+
+                          .setContentTitle(
+                              "Forex Alert"
+                          )
+
+                          .setContentText(
+                              "$symbol $condition ${formatPrice(target)} — ${formatPrice(price, symbol)}"
+                          )
+
+                          .setContentIntent(
+                              pendingIntent
+                          )
+
+                          .setAutoCancel(true)
+
+                          .setPriority(
+                              Notification.PRIORITY_HIGH
+                          )
+
+                          .build()
+
+
+                  manager.notify(
+                      alert.optLong(
+                          "id"
+                      ).toInt(),
+                      notification
+                  )
+              }
+
+
+              private fun createNotificationChannels() {
+
+                  val manager =
+                      getSystemService(
+                          NOTIFICATION_SERVICE
+                      ) as NotificationManager
+
+
+                  if (
+                      Build.VERSION.SDK_INT >=
+                      Build.VERSION_CODES.O
+                  ) {
+
+                      val monitoring =
+                          NotificationChannel(
+                              CHANNEL_ID,
+                              "Forex Monitoring",
+                              NotificationManager.IMPORTANCE_LOW
+                          )
+
+
+                      manager.createNotificationChannel(
+                          monitoring
+                      )
+
+
+                      val alerts =
+                          NotificationChannel(
+                              ALERT_CHANNEL_ID,
+                              "Forex Alerts",
+                              NotificationManager.IMPORTANCE_HIGH
+                          )
+
+
+                      val sound =
+                          RingtoneManager.getDefaultUri(
+                              RingtoneManager.TYPE_NOTIFICATION
+                          )
+
+
+                      alerts.setSound(
+                          sound,
+                          android.media.AudioAttributes.Builder()
+                              .setUsage(
+                                  android.media.AudioAttributes.USAGE_NOTIFICATION
+                              )
+                              .build()
+                      )
+
+
+                      manager.createNotificationChannel(
+                          alerts
+                      )
+                  }
+              }
+
+
+              private fun touchTolerance(
+                  symbol: String
+              ): Double {
+
+                  return if (
+                      symbol.contains(
+                          "JPY"
+                      )
+                  ) {
+
+                      0.005
+
+                  } else {
+
+                      0.00005
+                  }
+              }
+
+
+              private fun displaySymbol(
+                  symbol: String
+              ): String {
+
+                  return when (symbol) {
+
+                      "frxEURUSD" ->
+                          "EUR/USD"
+
+                      "frxGBPUSD" ->
+                          "GBP/USD"
+
+                      "frxUSDJPY" ->
+                          "USD/JPY"
+
+                      "frxUSDCHF" ->
+                          "USD/CHF"
+
+                      "frxAUDUSD" ->
+                          "AUD/USD"
+
+                      "frxUSDCAD" ->
+                          "USD/CAD"
+
+                      "frxNZDUSD" ->
+                          "NZD/USD"
+
+                      else ->
+                          symbol
+                  }
+              }
+
+
+              private fun formatPrice(
+                  price: Double,
+                  symbol: String
+              ): String {
+
+                  return if (
+                      symbol.contains(
+                          "JPY"
+                      )
+                  ) {
+
+                      String.format(
+                          java.util.Locale.US,
+                          "%.3f",
+                          price
+                      )
+
+                  } else {
+
+                      String.format(
+                          java.util.Locale.US,
+                          "%.5f",
+                          price
+                      )
+                  }
+              }
+
+
+              override fun onBind(
+                  intent: Intent?
+              ): IBinder? {
+
+                  return null
+              }
+
+
+              override fun onDestroy() {
+
+                  webSocket?.close(
+                      1000,
+                      "Service stopped"
+                  )
+
+                  client.dispatcher
+                      .executorService
+                      .shutdown()
+
+                  super.onDestroy()
+              }
+          }
+          EOF
+
+
+          cat > app/src/main/java/com/forexalert/app/MainActivity.kt <<'EOF'
+          package com.forexalert.app
+
+          import android.Manifest
+          import android.app.Activity
+          import android.content.BroadcastReceiver
+          import android.content.Context
+          import android.content.Intent
+          import android.content.IntentFilter
+          import android.content.pm.PackageManager
+          import android.graphics.Color
+          import android.os.Build
+          import android.os.Bundle
+          import android.view.Gravity
+          import android.view.View
+          import android.widget.*
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.text.SimpleDateFormat
+          import java.util.Date
+          import java.util.Locale
+
+
+          class MainActivity : Activity() {
+
+              private lateinit var priceText: TextView
+              private lateinit var statusText: TextView
+              private lateinit var alertContainer: LinearLayout
+              private lateinit var historyContainer: LinearLayout
+              private lateinit var symbolSpinner: Spinner
+              private lateinit var targetInput: EditText
+              private lateinit var conditionSpinner: Spinner
+
+
+              private val preferences by lazy {
+
+                  getSharedPreferences(
+                      "forex_alert_preferences",
+                      Context.MODE_PRIVATE
+                  )
+              }
+
+
+              private val alerts =
+                  mutableListOf<PriceAlert>()
+
+
+              private val history =
+                  mutableListOf<AlertHistory>()
+
+
+              private var currentSymbol =
+                  "frxEURUSD"
+
+
+              private var currentPrice =
+                  Double.NaN
+
+
+              private val symbols =
+                  linkedMapOf(
+
+                      "EUR/USD" to "frxEURUSD",
+
+                      "GBP/USD" to "frxGBPUSD",
+
+                      "USD/JPY" to "frxUSDJPY",
+
+                      "USD/CHF" to "frxUSDCHF",
+
+                      "AUD/USD" to "frxAUDUSD",
+
+                      "USD/CAD" to "frxUSDCAD",
+
+                      "NZD/USD" to "frxNZDUSD"
+                  )
+
+
+              data class PriceAlert(
+
+                  val id: Long,
+
+                  val symbol: String,
+
+                  val condition: String,
+
+                  val target: Double,
+
+                  var enabled: Boolean,
+
+                  var triggered: Boolean,
+
+                  var triggeredPrice: Double =
+                      Double.NaN,
+
+                  var triggeredTime: Long =
+                      0L
+              )
+
+
+              data class AlertHistory(
+
+                  val id: Long,
+
+                  val symbol: String,
+
+                  val condition: String,
+
+                  val target: Double,
+
+                  val triggeredPrice: Double,
+
+                  val triggeredTime: Long
+              )
+
+
+              private val receiver =
+                  object : BroadcastReceiver() {
+
+                      override fun onReceive(
+                          context: Context?,
+                          intent: Intent?
+                      ) {
+
+                          when (
+                              intent?.action
+                          ) {
+
+                              ForexAlertService
+                                  .ACTION_PRICE_UPDATE -> {
+
+                                  val symbol =
+                                      intent.getStringExtra(
+                                          ForexAlertService.EXTRA_SYMBOL
+                                      ) ?: return
+
+                                  val price =
+                                      intent.getDoubleExtra(
+                                          ForexAlertService.EXTRA_PRICE,
+                                          Double.NaN
+                                      )
+
+
+                                  if (
+                                      symbol ==
+                                      currentSymbol &&
+                                      price.isFinite()
+                                  ) {
+
+                                      currentPrice =
+                                          price
+
+                                      priceText.text =
+                                          formatPrice(
+                                              price
+                                          )
+
+                                      statusText.text =
+                                          "Live"
+
+                                      statusText.setTextColor(
+                                          Color.rgb(
+                                              0,
+                                              150,
+                                              0
+                                          )
+                                      )
+                                  }
+                              }
+
+
+                              ForexAlertService
+                                  .ACTION_ALERT_UPDATE -> {
+
+                                  loadAlerts()
+
+                                  loadHistory()
+
+                                  refreshAlertList()
+
+                                  refreshHistoryList()
+                              }
+                          }
+                      }
+                  }
+
+
+              override fun onCreate(
+                  savedInstanceState: Bundle?
+              ) {
+
+                  super.onCreate(
+                      savedInstanceState
+                  )
+
+
+                  loadAlerts()
+
+                  loadHistory()
+
+                  currentSymbol =
+                      preferences.getString(
+                          "selected_symbol",
+                          "frxEURUSD"
+                      ) ?: "frxEURUSD"
+
+
+                  createInterface()
+
+                  requestNotificationPermission()
+
+                  startMonitoringService()
+              }
+
+
+              override fun onStart() {
+
+                  super.onStart()
+
+                  val filter =
+                      IntentFilter().apply {
+
+                          addAction(
+                              ForexAlertService
+                                  .ACTION_PRICE_UPDATE
+                          )
+
+                          addAction(
+                              ForexAlertService
+                                  .ACTION_ALERT_UPDATE
+                          )
+                      }
+
+
+                  if (
+                      Build.VERSION.SDK_INT >=
+                      Build.VERSION_CODES.TIRAMISU
+                  ) {
+
+                      registerReceiver(
+                          receiver,
+                          filter,
+                          RECEIVER_NOT_EXPORTED
+                      )
+
+                  } else {
+
+                      registerReceiver(
+                          receiver,
+                          filter
+                      )
+                  }
+
+
+                  loadAlerts()
+
+                  loadHistory()
+
+                  refreshAlertList()
+
+                  refreshHistoryList()
+              }
+
+
+              override fun onStop() {
+
+                  try {
+
+                      unregisterReceiver(
+                          receiver
+                      )
+
+                  } catch (
+                      _: Exception
+                  ) {
+                  }
+
+
+                  super.onStop()
+              }
+
+
+              private fun startMonitoringService() {
+
+                  val intent =
+                      Intent(
+                          this,
+                          ForexAlertService::class.java
+                      )
+
+
+                  if (
+                      Build.VERSION.SDK_INT >=
+                      Build.VERSION_CODES.O
+                  ) {
+
+                      startForegroundService(
+                          intent
+                      )
+
+                  } else {
+
+                      startService(
+                          intent
+                      )
+                  }
+              }
+
+
+              private fun createInterface() {
+
+                  val root =
+                      LinearLayout(this)
+
+                  root.orientation =
+                      LinearLayout.VERTICAL
+
+                  root.setPadding(
+                      24,
+                      24,
+                      24,
+                      24
+                  )
+
+                  root.setBackgroundColor(
+                      Color.WHITE
+                  )
+
+
+                  val scrollView =
+                      ScrollView(this)
+
+
+                  val content =
+                      LinearLayout(this)
+
+                  content.orientation =
+                      LinearLayout.VERTICAL
+
+
+                  val title =
+                      TextView(this)
+
+                  title.text =
+                      "FOREX ALERT"
+
+                  title.textSize =
+                      28f
+
+                  title.setTextColor(
+                      Color.BLACK
+                  )
+
+                  title.gravity =
+                      Gravity.CENTER
+
+
+                  content.addView(
+                      title
+                  )
+
+
+                  val symbolLabel =
+                      TextView(this)
+
+                  symbolLabel.text =
+                      "Forex Pair"
+
+                  symbolLabel.textSize =
+                      16f
+
+                  symbolLabel.setTextColor(
+                      Color.DKGRAY
+                  )
+
+
+                  content.addView(
+                      symbolLabel,
+                      LinearLayout.LayoutParams(
+                          -1,
+                          -2
+                      ).apply {
+                          topMargin = 25
+                      }
+                  )
+
+
+                  symbolSpinner =
+                      Spinner(this)
+
+
+                  val symbolNames =
+                      symbols.keys.toList()
+
+
+                  symbolSpinner.adapter =
+                      ArrayAdapter(
+                          this,
+                          android.R.layout.simple_spinner_dropdown_item,
+                          symbolNames
+                      )
+
+
+                  val savedIndex =
+                      symbolNames.indexOf(
+                          displaySymbol(
+                              currentSymbol
+                          )
+                      )
+
+
+                  if (
+                      savedIndex >= 0
+                  ) {
+
+                      symbolSpinner
+                          .setSelection(
+                              savedIndex
+                          )
+                  }
+
+
+                  symbolSpinner
+                      .onItemSelectedListener =
+                      object :
+                          AdapterView.OnItemSelectedListener {
+
+                          override fun onNothingSelected(
+                              parent: AdapterView<*>?
+                          ) {
+                          }
+
+
+                          override fun onItemSelected(
+                              parent: AdapterView<*>?,
+                              view: View?,
+                              position: Int,
+                              id: Long
+                          ) {
+
+                              currentSymbol =
+                                  symbols[
+                                      symbolNames[
+                                          position
+                                      ]
+                                  ] ?: "frxEURUSD"
+
+
+                              currentPrice =
+                                  Double.NaN
+
+
+                              priceText.text =
+                                  "--"
+
+
+                              statusText.text =
+                                  "Connecting..."
+
+
+                              preferences.edit()
+
+                                  .putString(
+                                      "selected_symbol",
+                                      currentSymbol
+                                  )
+
+                                  .apply()
+
+
+                              val intent =
+                                  Intent(
+                                      this@MainActivity,
+                                      ForexAlertService::class.java
+                                  )
+
+
+                              intent.action =
+                                  ForexAlertService
+                                      .ACTION_SYMBOL_CHANGED
+
+
+                              intent.putExtra(
+                                  ForexAlertService.EXTRA_SYMBOL,
+                                  currentSymbol
+                              )
+
+
+                              if (
+                                  Build.VERSION.SDK_INT >=
+                                  Build.VERSION_CODES.O
+                              ) {
+
+                                  startForegroundService(
+                                      intent
+                                  )
+
+                              } else {
+
+                                  startService(
+                                      intent
+                                  )
+                              }
+
+
+                              loadAlerts()
+
+                              loadHistory()
+
+                              refreshAlertList()
+
+                              refreshHistoryList()
+                          }
+                      }
+
+
+                  content.addView(
+                      symbolSpinner
+                  )
+
+
+                  priceText =
+                      TextView(this)
+
+                  priceText.text =
+                      "--"
+
+                  priceText.textSize =
+                      42f
+
+                  priceText.setTextColor(
+                      Color.BLACK
+                  )
+
+                  priceText.gravity =
+                      Gravity.CENTER
+
+
+                  content.addView(
+                      priceText,
+                      LinearLayout.LayoutParams(
+                          -1,
+                          -2
+                      ).apply {
+                          topMargin = 20
+                      }
+                  )
+
+
+                  statusText =
+                      TextView(this)
+
+                  statusText.text =
+                      "Starting monitor..."
+
+                  statusText.textSize =
+                      17f
+
+                  statusText.setTextColor(
+                      Color.GRAY
+                  )
+
+                  statusText.gravity =
+                      Gravity.CENTER
+
+
+                  content.addView(
+                      statusText
+                  )
+
+
+                  val alertTitle =
+                      TextView(this)
+
+                  alertTitle.text =
+                      "Create Price Alert"
+
+                  alertTitle.textSize =
+                      21f
+
+                  alertTitle.setTextColor(
+                      Color.BLACK
+                  )
+
+
+                  content.addView(
+                      alertTitle,
+                      LinearLayout.LayoutParams(
+                          -1,
+                          -2
+                      ).apply {
+                          topMargin = 30
+                      }
+                  )
+
+
+                  val conditionLabel =
+                      TextView(this)
+
+                  conditionLabel.text =
+                      "Condition"
+
+                  conditionLabel.textSize =
+                      15f
+
+                  conditionLabel.setTextColor(
+                      Color.DKGRAY
+                  )
+
+
+                  content.addView(
+                      conditionLabel
+                  )
+
+
+                  conditionSpinner =
+                      Spinner(this)
+
+
+                  conditionSpinner.adapter =
+                      ArrayAdapter(
+                          this,
+                          android.R.layout.simple_spinner_dropdown_item,
+                          listOf(
+                              "Above",
+                              "Below",
+                              "Touch"
+                          )
+                      )
+
+
+                  content.addView(
+                      conditionSpinner
+                  )
+
+
+                  targetInput =
+                      EditText(this)
+
+                  targetInput.hint =
+                      "Target price"
+
+                  targetInput.textSize =
+                      18f
+
+                  targetInput.inputType =
+                      android.text.InputType.TYPE_CLASS_NUMBER or
+                          android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+
+
+                  content.addView(
+                      targetInput,
+                      LinearLayout.LayoutParams(
+                          -1,
+                          -2
+                      ).apply {
+                          topMargin = 10
+                      }
+                  )
+
+
+                  val addButton =
+                      Button(this)
+
+                  addButton.text =
+                      "ADD ALERT"
+
+                  addButton.setOnClickListener {
+
+                      addAlert()
+                  }
+
+
+                  content.addView(
+                      addButton
+                  )
+
+
+                  val alertsTitle =
+                      TextView(this)
+
+                  alertsTitle.text =
+                      "My Alerts"
+
+                  alertsTitle.textSize =
+                      21f
+
+                  alertsTitle.setTextColor(
+                      Color.BLACK
+                  )
+
+
+                  content.addView(
+                      alertsTitle,
+                      LinearLayout.LayoutParams(
+                          -1,
+                          -2
+                      ).apply {
+                          topMargin = 30
+                      }
+                  )
+
+
+                  alertContainer =
+                      LinearLayout(this)
+
+                  alertContainer.orientation =
+                      LinearLayout.VERTICAL
+
+
+                  content.addView(
+                      alertContainer
+                  )
+
+
+                  val historyTitle =
+                      TextView(this)
+
+                  historyTitle.text =
+                      "Alert History"
+
+                  historyTitle.textSize =
+                      21f
+
+                  historyTitle.setTextColor(
+                      Color.BLACK
+                  )
+
+
+                  content.addView(
+                      historyTitle,
+                      LinearLayout.LayoutParams(
+                          -1,
+                          -2
+                      ).apply {
+                          topMargin = 30
+                      }
+                  )
+
+
+                  historyContainer =
+                      LinearLayout(this)
+
+                  historyContainer.orientation =
+                      LinearLayout.VERTICAL
+
+
+                  content.addView(
+                      historyContainer
+                  )
+
+
+                  val clearButton =
+                      Button(this)
+
+                  clearButton.text =
+                      "CLEAR HISTORY"
+
+                  clearButton.setOnClickListener {
+
+                      history.clear()
+
+                      saveHistory()
+
+                      refreshHistoryList()
+                  }
+
+
+                  content.addView(
+                      clearButton
+                  )
+
+
+                  scrollView.addView(
+                      content
+                  )
+
+
+                  root.addView(
+                      scrollView,
+                      LinearLayout.LayoutParams(
+                          -1,
+                          0,
+                          1f
+                      )
+                  )
+
+
+                  setContentView(
+                      root
+                  )
+
+
+                  refreshAlertList()
+
+                  refreshHistoryList()
+              }
+
+
+              private fun addAlert() {
+
+                  val text =
+                      targetInput.text
+                          .toString()
+                          .trim()
+
+
+                  if (
+                      text.isEmpty()
+                  ) {
+
+                      Toast.makeText(
+                          this,
+                          "Enter a target price",
+                          Toast.LENGTH_SHORT
+                      ).show()
+
+                      return
+                  }
+
+
+                  val target =
+                      text.toDoubleOrNull()
+
+
+                  if (
+                      target == null ||
+                      !target.isFinite() ||
+                      target <= 0
+                  ) {
+
+                      Toast.makeText(
+                          this,
+                          "Enter a valid price",
+                          Toast.LENGTH_SHORT
+                      ).show()
+
+                      return
+                  }
+
+
+                  val condition =
+                      conditionSpinner
+                          .selectedItem
+                          .toString()
+
+
+                  val alert =
+                      PriceAlert(
+
+                          id =
+                              System.currentTimeMillis(),
+
+                          symbol =
+                              currentSymbol,
+
+                          condition =
+                              condition,
+
+                          target =
+                              target,
+
+                          enabled =
+                              true,
+
+                          triggered =
+                              false
+                      )
+
+
+                  alerts.add(
+                      alert
+                  )
+
+
+                  saveAlerts()
+
+                  refreshAlertList()
+
+                  targetInput.text.clear()
+
+
+                  Toast.makeText(
+                      this,
+                      "Alert added",
+                      Toast.LENGTH_SHORT
+                  ).show()
+              }
+
+
+              private fun refreshAlertList() {
+
+                  if (
+                      !::alertContainer
+                          .isInitialized
+                  ) {
+                      return
+                  }
+
+
+                  alertContainer
+                      .removeAllViews()
+
+
+                  val current =
+                      alerts.filter {
+                          it.symbol ==
+                              currentSymbol
+                      }
+
+
+                  if (
+                      current.isEmpty()
+                  ) {
+
+                      val empty =
+                          TextView(this)
+
+                      empty.text =
+                          "No alerts for this pair"
+
+                      empty.textSize =
+                          16f
+
+                      empty.setTextColor(
+                          Color.GRAY
+                      )
+
+                      alertContainer.addView(
+                          empty
+                      )
+
+                      return
+                  }
+
+
+                  for (
+                      alert in current
+                  ) {
+
+                      val row =
+                          LinearLayout(this)
+
+                      row.orientation =
+                          LinearLayout.VERTICAL
+
+                      row.setPadding(
+                          12,
+                          12,
+                          12,
+                          12
+                      )
+
+
+                      val description =
+                          TextView(this)
+
+                      description.text =
+                          "${alert.condition} ${formatPrice(alert.target)}"
+
+                      description.textSize =
+                          18f
+
+                      description.setTextColor(
+                          Color.BLACK
+                      )
+
+
+                      row.addView(
+                          description
+                      )
+
+
+                      val status =
+                          TextView(this)
+
+                      if (
+                          alert.triggered
+                      ) {
+
+                          status.text =
+                              "Triggered at ${formatPrice(alert.triggeredPrice)}\n" +
+                              formatTime(
+                                  alert.triggeredTime
+                              )
+
+                          status.setTextColor(
+                              Color.rgb(
+                                  0,
+                                  140,
+                                  0
+                              )
+                          )
+
+                      } else {
+
+                          status.text =
+                              if (
+                                  alert.enabled
+                              )
+                                  "Enabled"
+                              else
+                                  "Disabled"
+
+                          status.setTextColor(
+                              if (
+                                  alert.enabled
+                              )
+                                  Color.rgb(
+                                      0,
+                                      140,
+                                      0
+                                  )
+                              else
+                                  Color.GRAY
+                          )
+                      }
+
+
+                      row.addView(
+                          status
+                      )
+
+
+                      val buttons =
+                          LinearLayout(this)
+
+                      buttons.orientation =
+                          LinearLayout.HORIZONTAL
+
+
+                      if (
+                          alert.triggered
+                      ) {
+
+                          val reset =
+                              Button(this)
+
+                          reset.text =
+                              "RESET"
+
+                          reset.setOnClickListener {
+
+                              alert.triggered =
+                                  false
+
+                              alert.triggeredPrice =
+                                  Double.NaN
+
+                              alert.triggeredTime =
+                                  0L
+
+                              alert.enabled =
+                                  true
+
+                              saveAlerts()
+
+                              refreshAlertList()
+                          }
+
+
+                          buttons.addView(
+                              reset,
+                              LinearLayout.LayoutParams(
+                                  0,
+                                  -2,
+                                  1f
+                              )
+                          )
+
+                      } else {
+
+                          val toggle =
+                              Button(this)
+
+                          toggle.text =
+                              if (
+                                  alert.enabled
+                              )
+                                  "DISABLE"
+                              else
+                                  "ENABLE"
+
+
+                          toggle.setOnClickListener {
+
+                              alert.enabled =
+                                  !alert.enabled
+
+                              saveAlerts()
+
+                              refreshAlertList()
+                          }
+
+
+                          buttons.addView(
+                              toggle,
+                              LinearLayout.LayoutParams(
+                                  0,
+                                  -2,
+                                  1f
+                              )
+                          )
+                      }
+
+
+                      val delete =
+                          Button(this)
+
+                      delete.text =
+                          "DELETE"
+
+                      delete.setOnClickListener {
+
+                          alerts.removeAll {
+                              it.id ==
+                                  alert.id
+                          }
+
+                          saveAlerts()
+
+                          refreshAlertList()
+                      }
+
+
+                      buttons.addView(
+                          delete,
+                          LinearLayout.LayoutParams(
+                              0,
+                              -2,
+                              1f
+                          )
+                      )
+
+
+                      row.addView(
+                          buttons
+                      )
+
+
+                      alertContainer.addView(
+                          row
+                      )
+                  }
+              }
+
+
+              private fun refreshHistoryList() {
+
+                  if (
+                      !::historyContainer
+                          .isInitialized
+                  ) {
+                      return
+                  }
+
+
+                  historyContainer
+                      .removeAllViews()
+
+
+                  val current =
+                      history.filter {
+                          it.symbol ==
+                              currentSymbol
+                      }.sortedByDescending {
+                          it.triggeredTime
+                      }
+
+
+                  if (
+                      current.isEmpty()
+                  ) {
+
+                      val empty =
+                          TextView(this)
+
+                      empty.text =
+                          "No triggered alerts"
+
+                      empty.textSize =
+                          16f
+
+                      empty.setTextColor(
+                          Color.GRAY
+                      )
+
+                      historyContainer.addView(
+                          empty
+                      )
+
+                      return
+                  }
+
+
+                  for (
+                      item in current
+                  ) {
+
+                      val text =
+                          TextView(this)
+
+                      text.text =
+                          "${displaySymbol(item.symbol)}\n" +
+                          "${item.condition} ${formatPrice(item.target)}\n" +
+                          "Triggered price: ${formatPrice(item.triggeredPrice)}\n" +
+                          formatTime(
+                              item.triggeredTime
+                          )
+
+                      text.textSize =
+                          15f
+
+                      text.setTextColor(
+                          Color.DKGRAY
+                      )
+
+                      text.setPadding(
+                          12,
+                          12,
+                          12,
+                          18
+                      )
+
+
+                      historyContainer.addView(
+                          text
+                      )
+                  }
+              }
+
+
+              private fun saveAlerts() {
+
+                  try {
+
+                      val array =
+                          JSONArray()
+
+
+                      for (
+                          alert in alerts
+                      ) {
+
+                          val item =
+                              JSONObject()
+
+
+                          item.put(
+                              "id",
+                              alert.id
+                          )
+
+                          item.put(
+                              "symbol",
+                              alert.symbol
+                          )
+
+                          item.put(
+                              "condition",
+                              alert.condition
+                          )
+
+                          item.put(
+                              "target",
+                              alert.target
+                          )
+
+                          item.put(
+                              "enabled",
+                              alert.enabled
+                          )
+
+                          item.put(
+                              "triggered",
+                              alert.triggered
+                          )
+
+
+                          if (
+                              alert.triggeredPrice
+                                  .isFinite()
+                          ) {
+
+                              item.put(
+                                  "triggeredPrice",
+                                  alert.triggeredPrice
+                              )
+
+                          } else {
+
+                              item.put(
+                                  "triggeredPrice",
+                                  JSONObject.NULL
+                              )
+                          }
+
+
+                          item.put(
+                              "triggeredTime",
+                              alert.triggeredTime
+                          )
+
+
+                          array.put(
+                              item
+                          )
+                      }
+
+
+                      preferences.edit()
+
+                          .putString(
+                              "alerts",
+                              array.toString()
+                          )
+
+                          .apply()
+
+                  } catch (
+                      _: Exception
+                  ) {
+                  }
+              }
+
+
+              private fun loadAlerts() {
+
+                  alerts.clear()
+
+
+                  val saved =
+                      preferences.getString(
+                          "alerts",
+                          null
+                      ) ?: return
+
+
+                  try {
+
+                      val array =
+                          JSONArray(saved)
+
+
+                      for (
+                          i in 0 until array.length()
+                      ) {
+
+                          val item =
+                              array.getJSONObject(
+                                  i
+                              )
+
+
+                          val triggeredPrice =
+                              if (
+                                  item.has(
+                                      "triggeredPrice"
+                                  ) &&
+                                  !item.isNull(
+                                      "triggeredPrice"
+                                  )
+                              ) {
+
+                                  item.optDouble(
+                                      "triggeredPrice",
+                                      Double.NaN
+                                  )
+
+                              } else {
+
+                                  Double.NaN
+                              }
+
+
+                          alerts.add(
+
+                              PriceAlert(
+
+                                  id =
+                                      item.getLong(
+                                          "id"
+                                      ),
+
+                                  symbol =
+                                      item.getString(
+                                          "symbol"
+                                      ),
+
+                                  condition =
+                                      item.getString(
+                                          "condition"
+                                      ),
+
+                                  target =
+                                      item.getDouble(
+                                          "target"
+                                      ),
+
+                                  enabled =
+                                      item.getBoolean(
+                                          "enabled"
+                                      ),
+
+                                  triggered =
+                                      item.getBoolean(
+                                          "triggered"
+                                      ),
+
+                                  triggeredPrice =
+                                      triggeredPrice,
+
+                                  triggeredTime =
+                                      item.optLong(
+                                          "triggeredTime",
+                                          0L
+                                      )
+                              )
+                          )
+                      }
+
+                  } catch (
+                      _: Exception
+                  ) {
+                  }
+              }
+
+
+              private fun saveHistory() {
+
+                  try {
+
+                      val array =
+                          JSONArray()
+
+
+                      for (
+                          item in history
+                      ) {
+
+                          if (
+                              !item.triggeredPrice
+                                  .isFinite()
+                          ) {
+                              continue
+                          }
+
+
+                          val objectItem =
+                              JSONObject()
+
+
+                          objectItem.put(
+                              "id",
+                              item.id
+                          )
+
+                          objectItem.put(
+                              "symbol",
+                              item.symbol
+                          )
+
+                          objectItem.put(
+                              "condition",
+                              item.condition
+                          )
+
+                          objectItem.put(
+                              "target",
+                              item.target
+                          )
+
+                          objectItem.put(
+                              "triggeredPrice",
+                              item.triggeredPrice
+                          )
+
+                          objectItem.put(
+                              "triggeredTime",
+                              item.triggeredTime
+                          )
+
+
+                          array.put(
+                              objectItem
+                          )
+                      }
+
+
+                      preferences.edit()
+
+                          .putString(
+                              "history",
+                              array.toString()
+                          )
+
+                          .apply()
+
+                  } catch (
+                      _: Exception
+                  ) {
+                  }
+              }
+
+
+              private fun loadHistory() {
+
+                  history.clear()
+
+
+                  val saved =
+                      preferences.getString(
+                          "history",
+                          null
+                      ) ?: return
+
+
+                  try {
+
+                      val array =
+                          JSONArray(saved)
+
+
+                      for (
+                          i in 0 until array.length()
+                      ) {
+
+                          val item =
+                              array.getJSONObject(
+                                  i
+                              )
+
+
+                          val price =
+                              item.optDouble(
+                                  "triggeredPrice",
+                                  Double.NaN
+                              )
+
+
+                          if (
+                              !price.isFinite()
+                          ) {
+                              continue
+                          }
+
+
+                          history.add(
+
+                              AlertHistory(
+
+                                  id =
+                                      item.getLong(
+                                          "id"
+                                      ),
+
+                                  symbol =
+                                      item.getString(
+                                          "symbol"
+                                      ),
+
+                                  condition =
+                                      item.getString(
+                                          "condition"
+                                      ),
+
+                                  target =
+                                      item.getDouble(
+                                          "target"
+                                      ),
+
+                                  triggeredPrice =
+                                      price,
+
+                                  triggeredTime =
+                                      item.getLong(
+                                          "triggeredTime"
+                                      )
+                              )
+                          )
+                      }
+
+                  } catch (
+                      _: Exception
+                  ) {
+                  }
+              }
+
+
+              private fun requestNotificationPermission() {
+
+                  if (
+                      Build.VERSION.SDK_INT >=
+                      Build.VERSION_CODES.TIRAMISU
+                  ) {
+
+                      if (
+                          checkSelfPermission(
+                              Manifest.permission.POST_NOTIFICATIONS
+                          ) !=
+                          PackageManager.PERMISSION_GRANTED
+                      ) {
+
+                          requestPermissions(
+                              arrayOf(
+                                  Manifest.permission.POST_NOTIFICATIONS
+                              ),
+                              100
+                          )
+                      }
+                  }
+              }
+
+
+              private fun displaySymbol(
+                  symbol: String
+              ): String {
+
+                  return symbols.entries
+
+                      .firstOrNull {
+                          it.value ==
+                              symbol
+                      }
+
+                      ?.key
+
+                      ?: symbol
+              }
+
+
+              private fun formatPrice(
+                  price: Double
+              ): String {
+
+                  return if (
+                      currentSymbol.contains(
+                          "JPY"
+                      )
+                  ) {
+
+                      String.format(
+                          Locale.US,
+                          "%.3f",
+                          price
+                      )
+
+                  } else {
+
+                      String.format(
+                          Locale.US,
+                          "%.5f",
+                          price
+                      )
+                  }
+              }
+
+
+              private fun formatTime(
+                  time: Long
+              ): String {
+
+                  if (
+                      time <= 0
+                  ) {
+                      return ""
+                  }
+
+
+                  return SimpleDateFormat(
+                      "dd MMM yyyy, HH:mm:ss",
+                      Locale.getDefault()
+                  ).format(
+                      Date(time)
+                  )
+              }
+          }
+          EOF
+
 
       - name: Generate Gradle wrapper
         run: gradle wrapper --gradle-version 8.9
 
+
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
+
 
       - name: Build APK
         run: ./gradlew assembleDebug
 
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Forex-Alert-V1.3
+          name: Forex-Alert-V1.2
           path: app/build/outputs/apk/debug/app-debug.apk
