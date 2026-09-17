@@ -1,58 +1,60 @@
 package com.forexalert.app
 
 import android.Manifest
-import android.app.Activity
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
-import android.view.Gravity
 import android.view.View
 import android.widget.*
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.Response
-import okhttp3.WebSocket
-import okhttp3.WebSocketListener
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import okhttp3.*
 import org.json.JSONArray
 import org.json.JSONObject
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import java.util.concurrent.TimeUnit
 
+class MainActivity : AppCompatActivity() {
 
-class MainActivity : Activity() {
+    companion object {
+        private const val DERIV_WS =
+            "wss://ws.binaryws.com/websockets/v3"
 
+        private const val PREFS =
+            "forex_alert_preferences"
+
+        private const val ALERTS_KEY =
+            "alerts"
+
+        private const val HISTORY_KEY =
+            "history"
+
+        private const val SELECTED_SYMBOL_KEY =
+            "selected_symbol"
+
+        private const val NOTIFICATION_PERMISSION_CODE =
+            1001
+    }
+
+    private lateinit var symbolSpinner: Spinner
     private lateinit var priceText: TextView
     private lateinit var statusText: TextView
-    private lateinit var alertContainer: LinearLayout
-    private lateinit var historyContainer: LinearLayout
-    private lateinit var symbolSpinner: Spinner
-    private lateinit var targetInput: EditText
+    private lateinit var lastUpdateText: TextView
     private lateinit var conditionSpinner: Spinner
+    private lateinit var targetInput: EditText
+    private lateinit var alertsContainer: LinearLayout
+    private lateinit var historyContainer: LinearLayout
 
     private val preferences by lazy {
         getSharedPreferences(
-            "forex_alert_preferences",
+            PREFS,
             Context.MODE_PRIVATE
         )
     }
-
-    private val alerts =
-        mutableListOf<PriceAlert>()
-
-    private val history =
-        mutableListOf<AlertHistory>()
-
-    private var currentSymbol =
-        "frxEURUSD"
-
-    private var currentPrice =
-        Double.NaN
-
-    private var webSocket: WebSocket? = null
 
     private val client =
         OkHttpClient.Builder()
@@ -74,136 +76,79 @@ class MainActivity : Activity() {
             )
             .build()
 
+    private var webSocket: WebSocket? = null
+
+    private var currentSymbol =
+        "frxEURUSD"
+
+    private var currentPrice =
+        Double.NaN
+
+    private var isConnecting =
+        false
+
+    private var spinnerInitialized =
+        false
+
     private val symbols =
-        linkedMapOf(
-
-            "EUR/USD" to "frxEURUSD",
-
-            "GBP/USD" to "frxGBPUSD",
-
-            "USD/JPY" to "frxUSDJPY",
-
-            "USD/CHF" to "frxUSDCHF",
-
-            "AUD/USD" to "frxAUDUSD",
-
-            "USD/CAD" to "frxUSDCAD",
-
-            "NZD/USD" to "frxNZDUSD"
+        listOf(
+            "frxEURUSD",
+            "frxGBPUSD",
+            "frxUSDJPY",
+            "frxUSDCHF",
+            "frxAUDUSD",
+            "frxUSDCAD",
+            "frxNZDUSD",
+            "frxEURGBP",
+            "frxEURJPY",
+            "frxGBPJPY"
         )
 
-
-    data class PriceAlert(
-
-        val id: Long,
-
-        val symbol: String,
-
-        val condition: String,
-
-        val target: Double,
-
-        var enabled: Boolean,
-
-        var triggered: Boolean,
-
-        var triggeredPrice: Double =
-            Double.NaN,
-
-        var triggeredTime: Long =
-            0L
-    )
-
-
-    data class AlertHistory(
-
-        val id: Long,
-
-        val symbol: String,
-
-        val condition: String,
-
-        val target: Double,
-
-        val triggeredPrice: Double,
-
-        val triggeredTime: Long
-    )
-
+    private val displaySymbols =
+        listOf(
+            "EUR/USD",
+            "GBP/USD",
+            "USD/JPY",
+            "USD/CHF",
+            "AUD/USD",
+            "USD/CAD",
+            "NZD/USD",
+            "EUR/GBP",
+            "EUR/JPY",
+            "GBP/JPY"
+        )
 
     override fun onCreate(
         savedInstanceState: Bundle?
     ) {
-
         super.onCreate(
             savedInstanceState
         )
 
-        loadAlerts()
-
-        loadHistory()
-
-        currentSymbol =
-            preferences.getString(
-                "selected_symbol",
-                "frxEURUSD"
-            ) ?: "frxEURUSD"
-
         createInterface()
+
+        createNotificationChannel()
 
         requestNotificationPermission()
 
-        startMonitoringService()
+        currentSymbol =
+            preferences.getString(
+                SELECTED_SYMBOL_KEY,
+                "frxEURUSD"
+            ) ?: "frxEURUSD"
 
-        connectToDeriv()
-    }
+        setupSymbolSpinner()
 
-
-    override fun onResume() {
-
-        super.onResume()
-
-        if (
-            webSocket == null
-        ) {
-            connectToDeriv()
-        }
+        setupConditionSpinner()
 
         loadAlerts()
 
         loadHistory()
 
-        refreshAlertList()
+        startAlertService()
 
-        refreshHistoryList()
+        connectToDeriv()
     }
-
-
-    private fun startMonitoringService() {
-
-        val intent =
-            android.content.Intent(
-                this,
-                ForexAlertService::class.java
-            )
-
-        if (
-            Build.VERSION.SDK_INT >=
-            Build.VERSION_CODES.O
-        ) {
-
-            startForegroundService(
-                intent
-            )
-
-        } else {
-
-            startService(
-                intent
-            )
-        }
-    }
-
 
     private fun createInterface() {
 
@@ -221,13 +166,11 @@ class MainActivity : Activity() {
         )
 
         root.setBackgroundColor(
-            Color.WHITE
+            android.graphics.Color.WHITE
         )
-
 
         val scrollView =
             ScrollView(this)
-
 
         val content =
             LinearLayout(this)
@@ -235,194 +178,65 @@ class MainActivity : Activity() {
         content.orientation =
             LinearLayout.VERTICAL
 
+        root.addView(
+            scrollView,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+
+        scrollView.addView(
+            content
+        )
 
         val title =
             TextView(this)
 
         title.text =
-            "FOREX ALERT"
+            "Forex Alert"
 
         title.textSize =
             28f
 
         title.setTextColor(
-            Color.BLACK
+            android.graphics.Color.BLACK
         )
 
-        title.gravity =
-            Gravity.CENTER
-
+        title.setPadding(
+            0,
+            0,
+            0,
+            24
+        )
 
         content.addView(
             title
         )
 
-
-        val symbolLabel =
+        val pairLabel =
             TextView(this)
 
-        symbolLabel.text =
+        pairLabel.text =
             "Forex Pair"
 
-        symbolLabel.textSize =
+        pairLabel.textSize =
             16f
 
-        symbolLabel.setTextColor(
-            Color.DKGRAY
-        )
-
-
         content.addView(
-            symbolLabel,
-            LinearLayout.LayoutParams(
-                -1,
-                -2
-            ).apply {
-
-                topMargin = 25
-            }
+            pairLabel
         )
-
 
         symbolSpinner =
             Spinner(this)
 
-
-        val symbolNames =
-            symbols.keys.toList()
-
-
-        symbolSpinner.adapter =
-            ArrayAdapter(
-                this,
-                android.R.layout.simple_spinner_dropdown_item,
-                symbolNames
-            )
-
-
-        val savedIndex =
-            symbolNames.indexOf(
-                displaySymbol(
-                    currentSymbol
-                )
-            )
-
-
-        if (
-            savedIndex >= 0
-        ) {
-
-            symbolSpinner
-                .setSelection(
-                    savedIndex
-                )
-        }
-
-
-        symbolSpinner
-            .onItemSelectedListener =
-            object :
-                AdapterView.OnItemSelectedListener {
-
-
-                override fun onNothingSelected(
-                    parent: AdapterView<*>?
-                ) {
-                }
-
-
-                override fun onItemSelected(
-                    parent: AdapterView<*>?,
-                    view: View?,
-                    position: Int,
-                    id: Long
-                ) {
-
-                    val selected =
-                        symbolNames[
-                            position
-                        ]
-
-
-                    currentSymbol =
-                        symbols[
-                            selected
-                        ] ?: "frxEURUSD"
-
-
-                    currentPrice =
-                        Double.NaN
-
-
-                    priceText.text =
-                        "--"
-
-
-                    statusText.text =
-                        "Connecting..."
-
-
-                    preferences.edit()
-                        .putString(
-                            "selected_symbol",
-                            currentSymbol
-                        )
-                        .apply()
-
-
-                    reconnectToDeriv()
-
-
-                    val intent =
-                        android.content.Intent(
-                            this@MainActivity,
-                            ForexAlertService::class.java
-                        )
-
-
-                    intent.action =
-                        ForexAlertService
-                            .ACTION_SYMBOL_CHANGED
-
-
-                    intent.putExtra(
-                        ForexAlertService.EXTRA_SYMBOL,
-                        currentSymbol
-                    )
-
-
-                    if (
-                        Build.VERSION.SDK_INT >=
-                        Build.VERSION_CODES.O
-                    ) {
-
-                        startForegroundService(
-                            intent
-                        )
-
-                    } else {
-
-                        startService(
-                            intent
-                        )
-                    }
-
-
-                    loadAlerts()
-
-                    loadHistory()
-
-                    refreshAlertList()
-
-                    refreshHistoryList()
-                }
-            }
-
-
         content.addView(
-            symbolSpinner
+            symbolSpinner,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
         )
-
 
         priceText =
             TextView(this)
@@ -431,27 +245,22 @@ class MainActivity : Activity() {
             "--"
 
         priceText.textSize =
-            42f
+            34f
 
         priceText.setTextColor(
-            Color.BLACK
+            android.graphics.Color.BLACK
         )
 
-        priceText.gravity =
-            Gravity.CENTER
-
+        priceText.setPadding(
+            0,
+            28,
+            0,
+            4
+        )
 
         content.addView(
-            priceText,
-            LinearLayout.LayoutParams(
-                -1,
-                -2
-            ).apply {
-
-                topMargin = 20
-            }
+            priceText
         )
-
 
         statusText =
             TextView(this)
@@ -460,20 +269,31 @@ class MainActivity : Activity() {
             "Connecting..."
 
         statusText.textSize =
-            17f
-
-        statusText.setTextColor(
-            Color.GRAY
-        )
-
-        statusText.gravity =
-            Gravity.CENTER
-
+            16f
 
         content.addView(
             statusText
         )
 
+        lastUpdateText =
+            TextView(this)
+
+        lastUpdateText.text =
+            "Last update: --"
+
+        lastUpdateText.textSize =
+            14f
+
+        lastUpdateText.setPadding(
+            0,
+            4,
+            0,
+            24
+        )
+
+        content.addView(
+            lastUpdateText
+        )
 
         val alertTitle =
             TextView(this)
@@ -482,64 +302,29 @@ class MainActivity : Activity() {
             "Create Price Alert"
 
         alertTitle.textSize =
-            21f
+            20f
 
         alertTitle.setTextColor(
-            Color.BLACK
+            android.graphics.Color.BLACK
         )
 
+        alertTitle.setPadding(
+            0,
+            8,
+            0,
+            12
+        )
 
         content.addView(
-            alertTitle,
-            LinearLayout.LayoutParams(
-                -1,
-                -2
-            ).apply {
-
-                topMargin = 30
-            }
+            alertTitle
         )
-
-
-        val conditionLabel =
-            TextView(this)
-
-        conditionLabel.text =
-            "Condition"
-
-        conditionLabel.textSize =
-            15f
-
-        conditionLabel.setTextColor(
-            Color.DKGRAY
-        )
-
-
-        content.addView(
-            conditionLabel
-        )
-
 
         conditionSpinner =
             Spinner(this)
 
-
-        conditionSpinner.adapter =
-            ArrayAdapter(
-                this,
-                android.R.layout.simple_spinner_dropdown_item,
-                listOf(
-                    "Above",
-                    "Below",
-                    "Touch"
-                )
-            )
-
-
         content.addView(
             conditionSpinner
         )
-
 
         targetInput =
             EditText(this)
@@ -547,25 +332,17 @@ class MainActivity : Activity() {
         targetInput.hint =
             "Target price"
 
-        targetInput.textSize =
-            18f
-
         targetInput.inputType =
             android.text.InputType.TYPE_CLASS_NUMBER or
                 android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
 
-
-        content.addView(
-            targetInput,
-            LinearLayout.LayoutParams(
-                -1,
-                -2
-            ).apply {
-
-                topMargin = 10
-            }
+        targetInput.setSingleLine(
+            true
         )
 
+        content.addView(
+            targetInput
+        )
 
         val addButton =
             Button(this)
@@ -573,54 +350,48 @@ class MainActivity : Activity() {
         addButton.text =
             "ADD ALERT"
 
+        content.addView(
+            addButton
+        )
+
         addButton.setOnClickListener {
 
             addAlert()
         }
 
-
-        content.addView(
-            addButton
-        )
-
-
-        val alertsTitle =
+        val myAlertsTitle =
             TextView(this)
 
-        alertsTitle.text =
+        myAlertsTitle.text =
             "My Alerts"
 
-        alertsTitle.textSize =
-            21f
+        myAlertsTitle.textSize =
+            20f
 
-        alertsTitle.setTextColor(
-            Color.BLACK
+        myAlertsTitle.setTextColor(
+            android.graphics.Color.BLACK
         )
 
+        myAlertsTitle.setPadding(
+            0,
+            28,
+            0,
+            12
+        )
 
         content.addView(
-            alertsTitle,
-            LinearLayout.LayoutParams(
-                -1,
-                -2
-            ).apply {
-
-                topMargin = 30
-            }
+            myAlertsTitle
         )
 
-
-        alertContainer =
+        alertsContainer =
             LinearLayout(this)
 
-        alertContainer.orientation =
+        alertsContainer.orientation =
             LinearLayout.VERTICAL
 
-
         content.addView(
-            alertContainer
+            alertsContainer
         )
-
 
         val historyTitle =
             TextView(this)
@@ -629,24 +400,22 @@ class MainActivity : Activity() {
             "Alert History"
 
         historyTitle.textSize =
-            21f
+            20f
 
         historyTitle.setTextColor(
-            Color.BLACK
+            android.graphics.Color.BLACK
         )
 
+        historyTitle.setPadding(
+            0,
+            28,
+            0,
+            12
+        )
 
         content.addView(
-            historyTitle,
-            LinearLayout.LayoutParams(
-                -1,
-                -2
-            ).apply {
-
-                topMargin = 30
-            }
+            historyTitle
         )
-
 
         historyContainer =
             LinearLayout(this)
@@ -654,60 +423,129 @@ class MainActivity : Activity() {
         historyContainer.orientation =
             LinearLayout.VERTICAL
 
-
         content.addView(
             historyContainer
         )
 
-
-        val clearButton =
-            Button(this)
-
-        clearButton.text =
-            "CLEAR HISTORY"
-
-        clearButton.setOnClickListener {
-
-            history.clear()
-
-            saveHistory()
-
-            refreshHistoryList()
-        }
-
-
-        content.addView(
-            clearButton
-        )
-
-
-        scrollView.addView(
-            content
-        )
-
-
-        root.addView(
-            scrollView,
-            LinearLayout.LayoutParams(
-                -1,
-                0,
-                1f
-            )
-        )
-
-
         setContentView(
             root
         )
-
-
-        refreshAlertList()
-
-        refreshHistoryList()
     }
 
+    private fun setupSymbolSpinner() {
+
+        val adapter =
+            ArrayAdapter(
+                this,
+                android.R.layout.simple_spinner_dropdown_item,
+                displaySymbols
+            )
+
+        symbolSpinner.adapter =
+            adapter
+
+        val savedIndex =
+            symbols.indexOf(
+                currentSymbol
+            )
+
+        if (savedIndex >= 0) {
+
+            symbolSpinner.setSelection(
+                savedIndex,
+                false
+            )
+        }
+
+        symbolSpinner.onItemSelectedListener =
+            object : AdapterView.OnItemSelectedListener {
+
+                override fun onItemSelected(
+                    parent: AdapterView<*>?,
+                    view: View?,
+                    position: Int,
+                    id: Long
+                ) {
+
+                    if (!spinnerInitialized) {
+
+                        spinnerInitialized =
+                            true
+
+                        return
+                    }
+
+                    if (
+                        position < 0 ||
+                        position >= symbols.size
+                    ) {
+                        return
+                    }
+
+                    val newSymbol =
+                        symbols[position]
+
+                    if (
+                        newSymbol ==
+                        currentSymbol
+                    ) {
+                        return
+                    }
+
+                    currentSymbol =
+                        newSymbol
+
+                    preferences.edit()
+                        .putString(
+                            SELECTED_SYMBOL_KEY,
+                            currentSymbol
+                        )
+                        .apply()
+
+                    reconnectToDeriv()
+
+                    notifyServiceSymbolChanged()
+                }
+
+                override fun onNothingSelected(
+                    parent: AdapterView<*>?
+                ) {
+                }
+            }
+    }
+
+    private fun setupConditionSpinner() {
+
+        val conditions =
+            listOf(
+                "Above",
+                "Below",
+                "Touch"
+            )
+
+        val adapter =
+            ArrayAdapter(
+                this,
+                android.R.layout.simple_spinner_dropdown_item,
+                conditions
+            )
+
+        conditionSpinner.adapter =
+            adapter
+    }
 
     private fun connectToDeriv() {
+
+        if (isFinishing) {
+            return
+        }
+
+        if (isConnecting) {
+            return
+        }
+
+        isConnecting =
+            true
 
         runOnUiThread {
 
@@ -715,53 +553,44 @@ class MainActivity : Activity() {
                 "Connecting..."
 
             statusText.setTextColor(
-                Color.GRAY
+                android.graphics.Color.DKGRAY
             )
         }
-
-
-        webSocket?.close(
-            1000,
-            "Reconnect"
-        )
-
 
         val request =
             Request.Builder()
                 .url(
-                    "wss://ws.binaryws.com/websockets/v3"
+                    DERIV_WS
                 )
                 .build()
-
 
         webSocket =
             client.newWebSocket(
                 request,
-                object :
-                    WebSocketListener() {
-
+                object : WebSocketListener() {
 
                     override fun onOpen(
                         webSocket: WebSocket,
                         response: Response
                     ) {
 
-                        subscribeToSymbol(
+                        isConnecting =
+                            false
+
+                        subscribeToTicks(
                             webSocket
                         )
                     }
-
 
                     override fun onMessage(
                         webSocket: WebSocket,
                         text: String
                     ) {
 
-                        processMessage(
+                        processTickMessage(
                             text
                         )
                     }
-
 
                     override fun onFailure(
                         webSocket: WebSocket,
@@ -769,17 +598,19 @@ class MainActivity : Activity() {
                         response: Response?
                     ) {
 
+                        isConnecting =
+                            false
+
                         runOnUiThread {
 
                             statusText.text =
-                                "Connection failed"
+                                "Connection error"
 
                             statusText.setTextColor(
-                                Color.RED
+                                android.graphics.Color.RED
                             )
                         }
                     }
-
 
                     override fun onClosed(
                         webSocket: WebSocket,
@@ -787,13 +618,16 @@ class MainActivity : Activity() {
                         reason: String
                     ) {
 
+                        isConnecting =
+                            false
+
                         runOnUiThread {
 
                             statusText.text =
                                 "Disconnected"
 
                             statusText.setTextColor(
-                                Color.RED
+                                android.graphics.Color.RED
                             )
                         }
                     }
@@ -801,47 +635,29 @@ class MainActivity : Activity() {
             )
     }
 
-
-    private fun reconnectToDeriv() {
-
-        webSocket?.close(
-            1000,
-            "Changing symbol"
-        )
-
-        webSocket = null
-
-        connectToDeriv()
-    }
-
-
-    private fun subscribeToSymbol(
+    private fun subscribeToTicks(
         socket: WebSocket
     ) {
 
         val request =
             JSONObject()
 
-
         request.put(
             "ticks",
             currentSymbol
         )
-
 
         request.put(
             "subscribe",
             1
         )
 
-
         socket.send(
             request.toString()
         )
     }
 
-
-    private fun processMessage(
+    private fun processTickMessage(
         message: String
     ) {
 
@@ -851,7 +667,6 @@ class MainActivity : Activity() {
                 JSONObject(
                     message
                 )
-
 
             if (
                 json.has("error")
@@ -863,13 +678,12 @@ class MainActivity : Activity() {
                         "Data error"
 
                     statusText.setTextColor(
-                        Color.RED
+                        android.graphics.Color.RED
                     )
                 }
 
                 return
             }
-
 
             if (
                 json.optString(
@@ -879,18 +693,15 @@ class MainActivity : Activity() {
                 return
             }
 
-
             val tick =
                 json.optJSONObject(
                     "tick"
                 ) ?: return
 
-
             val symbol =
                 tick.optString(
                     "symbol"
                 )
-
 
             if (
                 symbol != currentSymbol
@@ -898,43 +709,32 @@ class MainActivity : Activity() {
                 return
             }
 
-
-            val quote =
+            val price =
                 tick.optDouble(
                     "quote",
                     Double.NaN
                 )
 
-
             if (
-                !quote.isFinite()
+                !price.isFinite()
             ) {
                 return
             }
 
-
             currentPrice =
-                quote
+                price
 
+            val epoch =
+                tick.optLong(
+                    "epoch",
+                    System.currentTimeMillis() / 1000
+                )
 
             runOnUiThread {
 
-                priceText.text =
-                    formatPrice(
-                        quote
-                    )
-
-
-                statusText.text =
-                    "Live"
-
-
-                statusText.setTextColor(
-                    Color.rgb(
-                        0,
-                        150,
-                        0
-                    )
+                displayPrice(
+                    price,
+                    epoch
                 )
             }
 
@@ -944,17 +744,67 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun displayPrice(
+        price: Double,
+        epoch: Long
+    ) {
+
+        val decimals =
+            getDecimalPlaces(
+                price
+            )
+
+        priceText.text =
+            String.format(
+                java.util.Locale.US,
+                "%.${decimals}f",
+                price
+            )
+
+        statusText.text =
+            "Live"
+
+        statusText.setTextColor(
+            android.graphics.Color.rgb(
+                0,
+                150,
+                0
+            )
+        )
+
+        lastUpdateText.text =
+            "Last update: $epoch"
+    }
+
+    private fun getDecimalPlaces(
+        price: Double
+    ): Int {
+
+        return when {
+
+            price >= 1000 ->
+                2
+
+            price >= 100 ->
+                3
+
+            price >= 10 ->
+                3
+
+            else ->
+                5
+        }
+    }
 
     private fun addAlert() {
 
-        val text =
+        val targetText =
             targetInput.text
                 .toString()
                 .trim()
 
-
         if (
-            text.isEmpty()
+            targetText.isEmpty()
         ) {
 
             Toast.makeText(
@@ -966,15 +816,12 @@ class MainActivity : Activity() {
             return
         }
 
-
         val target =
-            text.toDoubleOrNull()
-
+            targetText.toDoubleOrNull()
 
         if (
             target == null ||
-            !target.isFinite() ||
-            target <= 0
+            !target.isFinite()
         ) {
 
             Toast.makeText(
@@ -986,47 +833,77 @@ class MainActivity : Activity() {
             return
         }
 
-
         val condition =
             conditionSpinner
                 .selectedItem
-                .toString()
-
+                ?.toString()
+                ?: "Above"
 
         val alert =
-            PriceAlert(
+            JSONObject()
 
-                id =
-                    System.currentTimeMillis(),
+        alert.put(
+            "id",
+            System.currentTimeMillis()
+        )
 
-                symbol =
-                    currentSymbol,
+        alert.put(
+            "symbol",
+            currentSymbol
+        )
 
-                condition =
-                    condition,
-
-                target =
-                    target,
-
-                enabled =
-                    true,
-
-                triggered =
-                    false
+        alert.put(
+            "displaySymbol",
+            getDisplaySymbol(
+                currentSymbol
             )
+        )
 
+        alert.put(
+            "condition",
+            condition
+        )
 
-        alerts.add(
+        alert.put(
+            "target",
+            target
+        )
+
+        alert.put(
+            "enabled",
+            true
+        )
+
+        alert.put(
+            "triggered",
+            false
+        )
+
+        /*
+         * JSONObject does not allow NaN.
+         * Use JSONObject.NULL until the alert triggers.
+         */
+        alert.put(
+            "triggeredPrice",
+            JSONObject.NULL
+        )
+
+        val alerts =
+            getAlerts()
+
+        alerts.put(
             alert
         )
 
-
-        saveAlerts()
-
-        refreshAlertList()
+        saveAlerts(
+            alerts
+        )
 
         targetInput.text.clear()
 
+        loadAlerts()
+
+        notifyServiceSymbolChanged()
 
         Toast.makeText(
             this,
@@ -1035,306 +912,395 @@ class MainActivity : Activity() {
         ).show()
     }
 
+    private fun getAlerts(): JSONArray {
 
-    private fun refreshAlertList() {
+        val saved =
+            preferences.getString(
+                ALERTS_KEY,
+                null
+            )
 
         if (
-            !::alertContainer
-                .isInitialized
+            saved.isNullOrEmpty()
+        ) {
+
+            return JSONArray()
+        }
+
+        return try {
+
+            JSONArray(
+                saved
+            )
+
+        } catch (
+            _: Exception
+        ) {
+
+            JSONArray()
+        }
+    }
+
+    private fun saveAlerts(
+        alerts: JSONArray
+    ) {
+
+        preferences.edit()
+            .putString(
+                ALERTS_KEY,
+                alerts.toString()
+            )
+            .apply()
+    }
+
+    private fun loadAlerts() {
+
+        if (
+            !::alertsContainer.isInitialized
         ) {
             return
         }
 
+        alertsContainer.removeAllViews()
 
-        alertContainer
-            .removeAllViews()
-
-
-        val current =
-            alerts.filter {
-                it.symbol ==
-                    currentSymbol
-            }
-
+        val alerts =
+            getAlerts()
 
         if (
-            current.isEmpty()
+            alerts.length() == 0
         ) {
 
             val empty =
                 TextView(this)
 
             empty.text =
-                "No alerts for this pair"
+                "No alerts"
 
             empty.textSize =
-                16f
+                15f
 
-            empty.setTextColor(
-                Color.GRAY
-            )
-
-            alertContainer.addView(
+            alertsContainer.addView(
                 empty
             )
 
             return
         }
 
-
         for (
-            alert in current
+            i in 0 until alerts.length()
         ) {
 
-            val row =
-                LinearLayout(this)
+            val alert =
+                alerts.optJSONObject(
+                    i
+                ) ?: continue
 
-            row.orientation =
-                LinearLayout.VERTICAL
-
-            row.setPadding(
-                12,
-                12,
-                12,
-                12
-            )
-
-
-            val description =
-                TextView(this)
-
-            description.text =
-                "${alert.condition} ${formatPrice(alert.target)}"
-
-            description.textSize =
-                18f
-
-            description.setTextColor(
-                Color.BLACK
-            )
-
-
-            row.addView(
-                description
-            )
-
-
-            val status =
-                TextView(this)
-
-
-            if (
-                alert.triggered
-            ) {
-
-                status.text =
-                    "Triggered at ${formatPrice(alert.triggeredPrice)}\n" +
-                    formatTime(
-                        alert.triggeredTime
-                    )
-
-                status.setTextColor(
-                    Color.rgb(
-                        0,
-                        140,
-                        0
-                    )
-                )
-
-            } else {
-
-                status.text =
-                    if (
-                        alert.enabled
-                    )
-                        "Enabled"
-                    else
-                        "Disabled"
-
-                status.setTextColor(
-                    if (
-                        alert.enabled
-                    )
-                        Color.rgb(
-                            0,
-                            140,
-                            0
-                        )
-                    else
-                        Color.GRAY
-                )
-            }
-
-
-            row.addView(
-                status
-            )
-
-
-            val buttons =
-                LinearLayout(this)
-
-            buttons.orientation =
-                LinearLayout.HORIZONTAL
-
-
-            if (
-                alert.triggered
-            ) {
-
-                val reset =
-                    Button(this)
-
-                reset.text =
-                    "RESET"
-
-
-                reset.setOnClickListener {
-
-                    alert.triggered =
-                        false
-
-                    alert.triggeredPrice =
-                        Double.NaN
-
-                    alert.triggeredTime =
-                        0L
-
-                    alert.enabled =
-                        true
-
-                    saveAlerts()
-
-                    refreshAlertList()
-                }
-
-
-                buttons.addView(
-                    reset,
-                    LinearLayout.LayoutParams(
-                        0,
-                        -2,
-                        1f
-                    )
-                )
-
-            } else {
-
-                val toggle =
-                    Button(this)
-
-                toggle.text =
-                    if (
-                        alert.enabled
-                    )
-                        "DISABLE"
-                    else
-                        "ENABLE"
-
-
-                toggle.setOnClickListener {
-
-                    alert.enabled =
-                        !alert.enabled
-
-                    saveAlerts()
-
-                    refreshAlertList()
-                }
-
-
-                buttons.addView(
-                    toggle,
-                    LinearLayout.LayoutParams(
-                        0,
-                        -2,
-                        1f
-                    )
-                )
-            }
-
-
-            val delete =
-                Button(this)
-
-            delete.text =
-                "DELETE"
-
-
-            delete.setOnClickListener {
-
-                alerts.removeAll {
-                    it.id ==
-                        alert.id
-                }
-
-                saveAlerts()
-
-                refreshAlertList()
-            }
-
-
-            buttons.addView(
-                delete,
-                LinearLayout.LayoutParams(
-                    0,
-                    -2,
-                    1f
-                )
-            )
-
-
-            row.addView(
-                buttons
-            )
-
-
-            alertContainer.addView(
-                row
+            addAlertView(
+                alert
             )
         }
     }
 
+    private fun addAlertView(
+        alert: JSONObject
+    ) {
 
-    private fun refreshHistoryList() {
+        val row =
+            LinearLayout(this)
+
+        row.orientation =
+            LinearLayout.VERTICAL
+
+        row.setPadding(
+            12,
+            12,
+            12,
+            12
+        )
+
+        val symbol =
+            alert.optString(
+                "displaySymbol",
+                getDisplaySymbol(
+                    alert.optString(
+                        "symbol"
+                    )
+                )
+            )
+
+        val condition =
+            alert.optString(
+                "condition"
+            )
+
+        val target =
+            alert.optDouble(
+                "target",
+                Double.NaN
+            )
+
+        val enabled =
+            alert.optBoolean(
+                "enabled",
+                false
+            )
+
+        val triggered =
+            alert.optBoolean(
+                "triggered",
+                false
+            )
+
+        val text =
+            TextView(this)
 
         if (
-            !::historyContainer
-                .isInitialized
+            target.isFinite()
+        ) {
+
+            text.text =
+                "$symbol  $condition  $target"
+        } else {
+
+            text.text =
+                "$symbol  $condition"
+        }
+
+        text.textSize =
+            16f
+
+        row.addView(
+            text
+        )
+
+        val buttonRow =
+            LinearLayout(this)
+
+        buttonRow.orientation =
+            LinearLayout.HORIZONTAL
+
+        val toggle =
+            Button(this)
+
+        toggle.text =
+            if (enabled) {
+                "Disable"
+            } else {
+                "Enable"
+            }
+
+        buttonRow.addView(
+            toggle
+        )
+
+        val delete =
+            Button(this)
+
+        delete.text =
+            "Delete"
+
+        buttonRow.addView(
+            delete
+        )
+
+        row.addView(
+            buttonRow
+        )
+
+        if (triggered) {
+
+            val triggeredText =
+                TextView(this)
+
+            val triggeredPrice =
+                if (
+                    alert.has(
+                        "triggeredPrice"
+                    ) &&
+                    !alert.isNull(
+                        "triggeredPrice"
+                    )
+                ) {
+
+                    alert.optDouble(
+                        "triggeredPrice",
+                        Double.NaN
+                    )
+
+                } else {
+
+                    Double.NaN
+                }
+
+            triggeredText.text =
+                if (
+                    triggeredPrice.isFinite()
+                ) {
+
+                    "Triggered at $triggeredPrice"
+
+                } else {
+
+                    "Triggered"
+                }
+
+            triggeredText.textSize =
+                14f
+
+            row.addView(
+                triggeredText
+            )
+        }
+
+        toggle.setOnClickListener {
+
+            val id =
+                alert.optLong(
+                    "id"
+                )
+
+            toggleAlert(
+                id
+            )
+        }
+
+        delete.setOnClickListener {
+
+            val id =
+                alert.optLong(
+                    "id"
+                )
+
+            deleteAlert(
+                id
+            )
+        }
+
+        alertsContainer.addView(
+            row
+        )
+    }
+
+    private fun toggleAlert(
+        id: Long
+    ) {
+
+        val alerts =
+            getAlerts()
+
+        for (
+            i in 0 until alerts.length()
+        ) {
+
+            val alert =
+                alerts.optJSONObject(
+                    i
+                ) ?: continue
+
+            if (
+                alert.optLong(
+                    "id"
+                ) == id
+            ) {
+
+                val enabled =
+                    alert.optBoolean(
+                        "enabled",
+                        false
+                    )
+
+                alert.put(
+                    "enabled",
+                    !enabled
+                )
+
+                break
+            }
+        }
+
+        saveAlerts(
+            alerts
+        )
+
+        loadAlerts()
+
+        notifyServiceSymbolChanged()
+    }
+
+    private fun deleteAlert(
+        id: Long
+    ) {
+
+        val oldAlerts =
+            getAlerts()
+
+        val newAlerts =
+            JSONArray()
+
+        for (
+            i in 0 until oldAlerts.length()
+        ) {
+
+            val alert =
+                oldAlerts.optJSONObject(
+                    i
+                ) ?: continue
+
+            if (
+                alert.optLong(
+                    "id"
+                ) != id
+            ) {
+
+                newAlerts.put(
+                    alert
+                )
+            }
+        }
+
+        saveAlerts(
+            newAlerts
+        )
+
+        loadAlerts()
+
+        notifyServiceSymbolChanged()
+
+        Toast.makeText(
+            this,
+            "Alert deleted",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    private fun loadHistory() {
+
+        if (
+            !::historyContainer.isInitialized
         ) {
             return
         }
 
+        historyContainer.removeAllViews()
 
-        historyContainer
-            .removeAllViews()
-
-
-        val current =
-            history.filter {
-                it.symbol ==
-                    currentSymbol
-            }.sortedByDescending {
-                it.triggeredTime
-            }
-
+        val saved =
+            preferences.getString(
+                HISTORY_KEY,
+                null
+            )
 
         if (
-            current.isEmpty()
+            saved.isNullOrEmpty()
         ) {
 
             val empty =
                 TextView(this)
 
             empty.text =
-                "No triggered alerts"
+                "No alert history"
 
             empty.textSize =
-                16f
-
-            empty.setTextColor(
-                Color.GRAY
-            )
+                15f
 
             historyContainer.addView(
                 empty
@@ -1343,36 +1309,98 @@ class MainActivity : Activity() {
             return
         }
 
+        val history =
+            try {
+
+                JSONArray(
+                    saved
+                )
+
+            } catch (
+                _: Exception
+            ) {
+
+                JSONArray()
+            }
+
+        if (
+            history.length() == 0
+        ) {
+
+            val empty =
+                TextView(this)
+
+            empty.text =
+                "No alert history"
+
+            historyContainer.addView(
+                empty
+            )
+
+            return
+        }
 
         for (
-            item in current
+            i in history.length() - 1 downTo 0
         ) {
+
+            val item =
+                history.optJSONObject(
+                    i
+                ) ?: continue
 
             val text =
                 TextView(this)
 
-            text.text =
-                "${displaySymbol(item.symbol)}\n" +
-                "${item.condition} ${formatPrice(item.target)}\n" +
-                "Triggered price: ${formatPrice(item.triggeredPrice)}\n" +
-                formatTime(
-                    item.triggeredTime
+            val symbol =
+                item.optString(
+                    "displaySymbol",
+                    getDisplaySymbol(
+                        item.optString(
+                            "symbol"
+                        )
+                    )
                 )
 
-            text.textSize =
-                15f
+            val condition =
+                item.optString(
+                    "condition"
+                )
 
-            text.setTextColor(
-                Color.DKGRAY
-            )
+            val target =
+                item.optDouble(
+                    "target",
+                    Double.NaN
+                )
+
+            val triggeredPrice =
+                item.optDouble(
+                    "triggeredPrice",
+                    Double.NaN
+                )
+
+            text.text =
+                if (
+                    target.isFinite() &&
+                    triggeredPrice.isFinite()
+                ) {
+
+                    "$symbol  $condition  Target: $target  Triggered: $triggeredPrice"
+
+                } else {
+
+                    "$symbol  $condition"
+                }
+
+            text.textSize =
+                14f
 
             text.setPadding(
-                12,
-                12,
-                12,
-                18
+                0,
+                8,
+                0,
+                8
             )
-
 
             historyContainer.addView(
                 text
@@ -1380,191 +1408,30 @@ class MainActivity : Activity() {
         }
     }
 
-
-    private fun saveAlerts() {
-
-        try {
-
-            val array =
-                JSONArray()
-
-
-            for (
-                alert in alerts
-            ) {
-
-                val item =
-                    JSONObject()
-
-
-                item.put(
-                    "id",
-                    alert.id
-                )
-
-                item.put(
-                    "symbol",
-                    alert.symbol
-                )
-
-                item.put(
-                    "condition",
-                    alert.condition
-                )
-
-                item.put(
-                    "target",
-                    alert.target
-                )
-
-                item.put(
-                    "enabled",
-                    alert.enabled
-                )
-
-                item.put(
-                    "triggered",
-                    alert.triggered
-                )
-
-
-                if (
-                    alert.triggeredPrice
-                        .isFinite()
-                ) {
-
-                    item.put(
-                        "triggeredPrice",
-                        alert.triggeredPrice
-                    )
-
-                } else {
-
-                    item.put(
-                        "triggeredPrice",
-                        JSONObject.NULL
-                    )
-                }
-
-
-                item.put(
-                    "triggeredTime",
-                    alert.triggeredTime
-                )
-
-
-                array.put(
-                    item
-                )
-            }
-
-
-            preferences.edit()
-                .putString(
-                    "alerts",
-                    array.toString()
-                )
-                .apply()
-
-        } catch (
-            _: Exception
-        ) {
-        }
-    }
-
-
-    private fun loadAlerts() {
-
-        alerts.clear()
-
-
-        val saved =
-            preferences.getString(
-                "alerts",
-                null
-            ) ?: return
-
+    private fun startAlertService() {
 
         try {
 
-            val array =
-                JSONArray(saved)
+            val intent =
+                Intent(
+                    this,
+                    ForexAlertService::class.java
+                )
 
-
-            for (
-                i in 0 until array.length()
+            if (
+                Build.VERSION.SDK_INT >=
+                Build.VERSION_CODES.O
             ) {
 
-                val item =
-                    array.getJSONObject(
-                        i
-                    )
+                ContextCompat.startForegroundService(
+                    this,
+                    intent
+                )
 
+            } else {
 
-                val triggeredPrice =
-                    if (
-                        item.has(
-                            "triggeredPrice"
-                        ) &&
-                        !item.isNull(
-                            "triggeredPrice"
-                        )
-                    ) {
-
-                        item.optDouble(
-                            "triggeredPrice",
-                            Double.NaN
-                        )
-
-                    } else {
-
-                        Double.NaN
-                    }
-
-
-                alerts.add(
-
-                    PriceAlert(
-
-                        id =
-                            item.getLong(
-                                "id"
-                            ),
-
-                        symbol =
-                            item.getString(
-                                "symbol"
-                            ),
-
-                        condition =
-                            item.getString(
-                                "condition"
-                            ),
-
-                        target =
-                            item.getDouble(
-                                "target"
-                            ),
-
-                        enabled =
-                            item.getBoolean(
-                                "enabled"
-                            ),
-
-                        triggered =
-                            item.getBoolean(
-                                "triggered"
-                            ),
-
-                        triggeredPrice =
-                            triggeredPrice,
-
-                        triggeredTime =
-                            item.optLong(
-                                "triggeredTime",
-                                0L
-                            )
-                    )
+                startService(
+                    intent
                 )
             }
 
@@ -1574,156 +1441,38 @@ class MainActivity : Activity() {
         }
     }
 
-
-    private fun saveHistory() {
-
-        try {
-
-            val array =
-                JSONArray()
-
-
-            for (
-                item in history
-            ) {
-
-                if (
-                    !item.triggeredPrice
-                        .isFinite()
-                ) {
-                    continue
-                }
-
-
-                val objectItem =
-                    JSONObject()
-
-
-                objectItem.put(
-                    "id",
-                    item.id
-                )
-
-                objectItem.put(
-                    "symbol",
-                    item.symbol
-                )
-
-                objectItem.put(
-                    "condition",
-                    item.condition
-                )
-
-                objectItem.put(
-                    "target",
-                    item.target
-                )
-
-                objectItem.put(
-                    "triggeredPrice",
-                    item.triggeredPrice
-                )
-
-                objectItem.put(
-                    "triggeredTime",
-                    item.triggeredTime
-                )
-
-
-                array.put(
-                    objectItem
-                )
-            }
-
-
-            preferences.edit()
-                .putString(
-                    "history",
-                    array.toString()
-                )
-                .apply()
-
-        } catch (
-            _: Exception
-        ) {
-        }
-    }
-
-
-    private fun loadHistory() {
-
-        history.clear()
-
-
-        val saved =
-            preferences.getString(
-                "history",
-                null
-            ) ?: return
-
+    private fun notifyServiceSymbolChanged() {
 
         try {
 
-            val array =
-                JSONArray(saved)
+            val intent =
+                Intent(
+                    this,
+                    ForexAlertService::class.java
+                )
 
+            intent.action =
+                ForexAlertService.ACTION_SYMBOL_CHANGED
 
-            for (
-                i in 0 until array.length()
+            intent.putExtra(
+                ForexAlertService.EXTRA_SYMBOL,
+                currentSymbol
+            )
+
+            if (
+                Build.VERSION.SDK_INT >=
+                Build.VERSION_CODES.O
             ) {
 
-                val item =
-                    array.getJSONObject(
-                        i
-                    )
+                ContextCompat.startForegroundService(
+                    this,
+                    intent
+                )
 
+            } else {
 
-                val price =
-                    item.optDouble(
-                        "triggeredPrice",
-                        Double.NaN
-                    )
-
-
-                if (
-                    !price.isFinite()
-                ) {
-                    continue
-                }
-
-
-                history.add(
-
-                    AlertHistory(
-
-                        id =
-                            item.getLong(
-                                "id"
-                            ),
-
-                        symbol =
-                            item.getString(
-                                "symbol"
-                            ),
-
-                        condition =
-                            item.getString(
-                                "condition"
-                            ),
-
-                        target =
-                            item.getDouble(
-                                "target"
-                            ),
-
-                        triggeredPrice =
-                            price,
-
-                        triggeredTime =
-                            item.getLong(
-                                "triggeredTime"
-                            )
-                    )
+                startService(
+                    intent
                 )
             }
 
@@ -1733,6 +1482,82 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun reconnectToDeriv() {
+
+        webSocket?.close(
+            1000,
+            "Changing symbol"
+        )
+
+        webSocket =
+            null
+
+        isConnecting =
+            false
+
+        currentPrice =
+            Double.NaN
+
+        priceText.text =
+            "--"
+
+        statusText.text =
+            "Connecting..."
+
+        lastUpdateText.text =
+            "Last update: --"
+
+        connectToDeriv()
+    }
+
+    private fun getDisplaySymbol(
+        symbol: String
+    ): String {
+
+        val index =
+            symbols.indexOf(
+                symbol
+            )
+
+        return if (
+            index >= 0
+        ) {
+
+            displaySymbols[index]
+
+        } else {
+
+            symbol
+        }
+    }
+
+    private fun createNotificationChannel() {
+
+        if (
+            Build.VERSION.SDK_INT >=
+            Build.VERSION_CODES.O
+        ) {
+
+            val channel =
+                NotificationChannel(
+                    "forex_alerts",
+                    "Forex Alerts",
+                    NotificationManager.IMPORTANCE_HIGH
+                )
+
+            channel.description =
+                "Price alert notifications"
+
+            val manager =
+                getSystemService(
+                    NotificationManager::class.java
+                )
+
+            manager.createNotificationChannel(
+                channel
+            )
+        }
+    }
 
     private fun requestNotificationPermission() {
 
@@ -1742,96 +1567,50 @@ class MainActivity : Activity() {
         ) {
 
             if (
-                checkSelfPermission(
+                ContextCompat.checkSelfPermission(
+                    this,
                     Manifest.permission.POST_NOTIFICATIONS
                 ) !=
                 PackageManager.PERMISSION_GRANTED
             ) {
 
-                requestPermissions(
+                ActivityCompat.requestPermissions(
+                    this,
                     arrayOf(
                         Manifest.permission.POST_NOTIFICATIONS
                     ),
-                    100
+                    NOTIFICATION_PERMISSION_CODE
                 )
             }
         }
     }
 
+    override fun onResume() {
 
-    private fun displaySymbol(
-        symbol: String
-    ): String {
+        super.onResume()
 
-        return symbols.entries
-            .firstOrNull {
-                it.value ==
-                    symbol
-            }
-            ?.key
-            ?: symbol
-    }
+        loadAlerts()
 
-
-    private fun formatPrice(
-        price: Double
-    ): String {
-
-        return if (
-            currentSymbol.contains(
-                "JPY"
-            )
-        ) {
-
-            String.format(
-                Locale.US,
-                "%.3f",
-                price
-            )
-
-        } else {
-
-            String.format(
-                Locale.US,
-                "%.5f",
-                price
-            )
-        }
-    }
-
-
-    private fun formatTime(
-        time: Long
-    ): String {
+        loadHistory()
 
         if (
-            time <= 0
+            webSocket == null &&
+            !isConnecting
         ) {
-            return ""
+
+            connectToDeriv()
         }
-
-
-        return SimpleDateFormat(
-            "dd MMM yyyy, HH:mm:ss",
-            Locale.getDefault()
-        ).format(
-            Date(time)
-        )
     }
-
 
     override fun onDestroy() {
 
         webSocket?.close(
             1000,
-            "App closed"
+            "Activity destroyed"
         )
 
-        webSocket = null
-
-        client.dispatcher
-            .executorService
-            .shutdown()
+        webSocket =
+            null
 
         super.onDestroy()
     }
