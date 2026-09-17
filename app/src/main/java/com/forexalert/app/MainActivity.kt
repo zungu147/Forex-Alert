@@ -4,7 +4,6 @@ import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -16,6 +15,7 @@ import androidx.core.content.ContextCompat
 import okhttp3.*
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
@@ -91,11 +91,6 @@ class MainActivity : AppCompatActivity() {
     private var spinnerInitialized =
         false
 
-    private var reconnectHandler =
-        android.os.Handler(
-            mainLooper
-        )
-
     private val symbols =
         listOf(
             "frxEURUSD",
@@ -151,7 +146,15 @@ class MainActivity : AppCompatActivity() {
 
         loadHistory()
 
-        startAlertService()
+        /*
+         * IMPORTANT:
+         *
+         * ForexAlertService is temporarily NOT
+         * started here.
+         *
+         * We are testing the live price connection
+         * independently from the background service.
+         */
 
         connectToDeriv()
     }
@@ -216,7 +219,9 @@ class MainActivity : AppCompatActivity() {
             24
         )
 
-        content.addView(title)
+        content.addView(
+            title
+        )
 
         val pairLabel =
             TextView(this)
@@ -451,6 +456,7 @@ class MainActivity : AppCompatActivity() {
             )
 
         if (savedIndex >= 0) {
+
             symbolSpinner.setSelection(
                 savedIndex,
                 false
@@ -469,7 +475,10 @@ class MainActivity : AppCompatActivity() {
                 ) {
 
                     if (!spinnerInitialized) {
-                        spinnerInitialized = true
+
+                        spinnerInitialized =
+                            true
+
                         return
                     }
 
@@ -501,8 +510,6 @@ class MainActivity : AppCompatActivity() {
                         .apply()
 
                     reconnectToDeriv()
-
-                    notifyServiceSymbolChanged()
                 }
 
                 override fun onNothingSelected(
@@ -542,7 +549,8 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        isConnecting = true
+        isConnecting =
+            true
 
         runOnUiThread {
 
@@ -580,7 +588,7 @@ class MainActivity : AppCompatActivity() {
                         runOnUiThread {
 
                             statusText.text =
-                                "Connected - requesting price..."
+                                "Connected - requesting price"
 
                             statusText.setTextColor(
                                 android.graphics.Color.rgb(
@@ -615,6 +623,10 @@ class MainActivity : AppCompatActivity() {
                         isConnecting =
                             false
 
+                        val errorMessage =
+                            t.message
+                                ?: t.javaClass.simpleName
+
                         val responseInfo =
                             if (
                                 response != null
@@ -623,10 +635,6 @@ class MainActivity : AppCompatActivity() {
                             } else {
                                 ""
                             }
-
-                        val errorMessage =
-                            t.message
-                                ?: t.javaClass.simpleName
 
                         runOnUiThread {
 
@@ -775,7 +783,7 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread {
 
                     statusText.text =
-                        "Tick response has no tick data"
+                        "Tick response has no data"
 
                     statusText.setTextColor(
                         android.graphics.Color.RED
@@ -825,8 +833,7 @@ class MainActivity : AppCompatActivity() {
             val epoch =
                 tick.optLong(
                     "epoch",
-                    System.currentTimeMillis() /
-                        1000
+                    System.currentTimeMillis() / 1000
                 )
 
             runOnUiThread {
@@ -865,7 +872,7 @@ class MainActivity : AppCompatActivity() {
 
         priceText.text =
             String.format(
-                java.util.Locale.US,
+                Locale.US,
                 "%.${decimals}f",
                 price
             )
@@ -1006,8 +1013,6 @@ class MainActivity : AppCompatActivity() {
         targetInput.text.clear()
 
         loadAlerts()
-
-        notifyServiceSymbolChanged()
 
         Toast.makeText(
             this,
@@ -1159,18 +1164,17 @@ class MainActivity : AppCompatActivity() {
         val text =
             TextView(this)
 
-        if (
-            target.isFinite()
-        ) {
+        text.text =
+            if (
+                target.isFinite()
+            ) {
 
-            text.text =
                 "$symbol  $condition  $target"
 
-        } else {
+            } else {
 
-            text.text =
                 "$symbol  $condition"
-        }
+            }
 
         text.textSize =
             16f
@@ -1260,25 +1264,19 @@ class MainActivity : AppCompatActivity() {
 
         toggle.setOnClickListener {
 
-            val id =
+            toggleAlert(
                 alert.optLong(
                     "id"
                 )
-
-            toggleAlert(
-                id
             )
         }
 
         delete.setOnClickListener {
 
-            val id =
+            deleteAlert(
                 alert.optLong(
                     "id"
                 )
-
-            deleteAlert(
-                id
             )
         }
 
@@ -1330,8 +1328,6 @@ class MainActivity : AppCompatActivity() {
         )
 
         loadAlerts()
-
-        notifyServiceSymbolChanged()
     }
 
     private fun deleteAlert(
@@ -1371,8 +1367,6 @@ class MainActivity : AppCompatActivity() {
         )
 
         loadAlerts()
-
-        notifyServiceSymbolChanged()
 
         Toast.makeText(
             this,
@@ -1517,80 +1511,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun startAlertService() {
-
-        try {
-
-            val intent =
-                Intent(
-                    this,
-                    ForexAlertService::class.java
-                )
-
-            if (
-                Build.VERSION.SDK_INT >=
-                Build.VERSION_CODES.O
-            ) {
-
-                ContextCompat.startForegroundService(
-                    this,
-                    intent
-                )
-
-            } else {
-
-                startService(
-                    intent
-                )
-            }
-
-        } catch (
-            _: Exception
-        ) {
-        }
-    }
-
-    private fun notifyServiceSymbolChanged() {
-
-        try {
-
-            val intent =
-                Intent(
-                    this,
-                    ForexAlertService::class.java
-                )
-
-            intent.action =
-                ForexAlertService.ACTION_SYMBOL_CHANGED
-
-            intent.putExtra(
-                ForexAlertService.EXTRA_SYMBOL,
-                currentSymbol
-            )
-
-            if (
-                Build.VERSION.SDK_INT >=
-                Build.VERSION_CODES.O
-            ) {
-
-                ContextCompat.startForegroundService(
-                    this,
-                    intent
-                )
-
-            } else {
-
-                startService(
-                    intent
-                )
-            }
-
-        } catch (
-            _: Exception
-        ) {
-        }
-    }
-
     private fun reconnectToDeriv() {
 
         webSocket?.close(
@@ -1600,7 +1520,8 @@ class MainActivity : AppCompatActivity() {
 
         webSocket = null
 
-        isConnecting = false
+        isConnecting =
+            false
 
         currentPrice =
             Double.NaN
@@ -1710,10 +1631,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-
-        reconnectHandler.removeCallbacksAndMessages(
-            null
-        )
 
         webSocket?.close(
             1000,
