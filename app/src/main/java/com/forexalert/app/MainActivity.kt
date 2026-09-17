@@ -13,6 +13,7 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONObject
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 
 class MainActivity : Activity() {
 
@@ -20,7 +21,13 @@ class MainActivity : Activity() {
     private lateinit var statusText: TextView
     private lateinit var timeText: TextView
 
-    private val client = OkHttpClient()
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.MILLISECONDS)
+        .writeTimeout(15, TimeUnit.SECONDS)
+        .pingInterval(30, TimeUnit.SECONDS)
+        .build()
+
     private var webSocket: WebSocket? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -132,8 +139,12 @@ class MainActivity : Activity() {
             statusText.setTextColor(Color.GRAY)
         }
 
+        /*
+         * Current public Deriv WebSocket endpoint.
+         * No login or API token is required for public market data.
+         */
         val request = Request.Builder()
-            .url("wss://ws.binaryws.com/websockets/v3")
+            .url("wss://api.derivws.com/trading/v1/options/ws/public")
             .build()
 
         webSocket = client.newWebSocket(
@@ -147,24 +158,12 @@ class MainActivity : Activity() {
 
                     runOnUiThread {
                         statusText.text = "Connected"
-                        statusText.setTextColor(Color.rgb(0, 150, 0))
+                        statusText.setTextColor(
+                            Color.rgb(0, 150, 0)
+                        )
                     }
 
-                    val subscribeRequest = JSONObject()
-
-                    subscribeRequest.put(
-                        "ticks",
-                        "frxEURUSD"
-                    )
-
-                    subscribeRequest.put(
-                        "subscribe",
-                        1
-                    )
-
-                    webSocket.send(
-                        subscribeRequest.toString()
-                    )
+                    subscribeToEURUSD(webSocket)
                 }
 
                 override fun onMessage(
@@ -182,7 +181,9 @@ class MainActivity : Activity() {
                 ) {
 
                     runOnUiThread {
-                        statusText.text = "Disconnecting..."
+                        statusText.text =
+                            "Disconnecting..."
+
                         statusText.setTextColor(Color.GRAY)
                     }
                 }
@@ -194,7 +195,9 @@ class MainActivity : Activity() {
                 ) {
 
                     runOnUiThread {
-                        statusText.text = "Disconnected"
+                        statusText.text =
+                            "Disconnected"
+
                         statusText.setTextColor(Color.RED)
                     }
                 }
@@ -205,55 +208,137 @@ class MainActivity : Activity() {
                     response: Response?
                 ) {
 
+                    val errorMessage =
+                        t.message ?: "Unknown error"
+
                     runOnUiThread {
+
                         statusText.text =
                             "Connection failed"
 
                         statusText.setTextColor(Color.RED)
+
+                        timeText.text =
+                            errorMessage
                     }
                 }
             }
         )
     }
 
-    private fun processMessage(message: String) {
+    private fun subscribeToEURUSD(
+        webSocket: WebSocket
+    ) {
+
+        /*
+         * Subscribe to EUR/USD.
+         */
+        val request = JSONObject()
+
+        request.put(
+            "ticks",
+            "frxEURUSD"
+        )
+
+        request.put(
+            "subscribe",
+            1
+        )
+
+        webSocket.send(
+            request.toString()
+        )
+    }
+
+    private fun processMessage(
+        message: String
+    ) {
 
         try {
 
             val json = JSONObject(message)
 
-            if (json.optString("msg_type") != "tick") {
+            /*
+             * Display API errors instead of silently
+             * ignoring them.
+             */
+            if (json.has("error")) {
+
+                val error =
+                    json.optJSONObject("error")
+
+                val errorMessage =
+                    error?.optString(
+                        "message",
+                        "Deriv API error"
+                    )
+                        ?: "Deriv API error"
+
+                runOnUiThread {
+
+                    statusText.text =
+                        "API error"
+
+                    statusText.setTextColor(
+                        Color.RED
+                    )
+
+                    timeText.text =
+                        errorMessage
+                }
+
                 return
             }
 
-            val tick = json.optJSONObject("tick")
-                ?: return
+            /*
+             * Tick response.
+             */
+            if (
+                json.optString("msg_type") != "tick"
+            ) {
+                return
+            }
 
-            val quote = tick.optDouble(
-                "quote",
-                Double.NaN
-            )
+            val tick =
+                json.optJSONObject("tick")
+                    ?: return
+
+            val quote =
+                tick.optDouble(
+                    "quote",
+                    Double.NaN
+                )
 
             if (quote.isNaN()) {
                 return
             }
 
-            val epoch = tick.optLong(
-                "epoch",
-                0
-            )
+            val epoch =
+                tick.optLong(
+                    "epoch",
+                    0
+                )
 
-            val price = String.format(
-                Locale.US,
-                "%.5f",
-                quote
-            )
+            val price =
+                String.format(
+                    Locale.US,
+                    "%.5f",
+                    quote
+                )
 
             runOnUiThread {
 
                 priceText.text = price
 
+                statusText.text =
+                    "Live"
+
+                statusText.setTextColor(
+                    Color.rgb(0, 150, 0)
+                )
+
                 if (epoch > 0) {
+
                     timeText.text =
                         "Last update: $epoch"
                 }
@@ -262,9 +347,16 @@ class MainActivity : Activity() {
         } catch (e: Exception) {
 
             runOnUiThread {
+
                 statusText.text =
                     "Data error"
-                statusText.setTextColor(Color.RED)
+
+                statusText.setTextColor(
+                    Color.RED
+                )
+
+                timeText.text =
+                    e.message ?: "Invalid data"
             }
         }
     }
