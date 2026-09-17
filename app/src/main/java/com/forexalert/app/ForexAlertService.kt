@@ -86,8 +86,12 @@ class ForexAlertService : Service() {
 
     private var reconnecting = false
 
+    private var serviceRunning = false
+
     override fun onCreate() {
         super.onCreate()
+
+        serviceRunning = true
 
         createNotificationChannels()
 
@@ -128,6 +132,10 @@ class ForexAlertService : Service() {
     }
 
     private fun connect() {
+
+        if (!serviceRunning) {
+            return
+        }
 
         if (reconnecting) {
             return
@@ -548,10 +556,6 @@ class ForexAlertService : Service() {
 
         history.put(item)
 
-        /*
-         * Keep history lightweight.
-         * Maximum 100 records.
-         */
         while (
             history.length() > 100
         ) {
@@ -712,7 +716,7 @@ class ForexAlertService : Service() {
 
     private fun scheduleReconnect() {
 
-        if (isDestroyed) {
+        if (!serviceRunning) {
             return
         }
 
@@ -720,17 +724,19 @@ class ForexAlertService : Service() {
             mainLooper
         ).postDelayed(
             {
-                if (
-                    !isDestroyed
-                ) {
+
+                if (serviceRunning) {
                     connect()
                 }
+
             },
             5000
         )
     }
 
     override fun onDestroy() {
+
+        serviceRunning = false
 
         webSocket?.close(
             1000,
