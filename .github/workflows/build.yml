@@ -73,8 +73,8 @@ jobs:
                   applicationId 'com.forexalert.app'
                   minSdk 23
                   targetSdk 35
-                  versionCode 2
-                  versionName '1.1.0'
+                  versionCode 3
+                  versionName '1.2.0'
               }
 
               compileOptions {
@@ -90,7 +90,6 @@ jobs:
           dependencies {
               implementation 'androidx.core:core-ktx:1.15.0'
               implementation 'androidx.appcompat:appcompat:1.7.0'
-
               implementation 'com.squareup.okhttp3:okhttp:4.12.0'
           }
           EOF
@@ -100,6 +99,9 @@ jobs:
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
               <uses-permission android:name="android.permission.INTERNET" />
+
+              <uses-permission
+                  android:name="android.permission.POST_NOTIFICATIONS" />
 
               <application
                   android:theme="@style/AppTheme"
@@ -155,5 +157,5 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Forex-Alert-V1.1
+          name: Forex-Alert-V1.2
           path: app/build/outputs/apk/debug/app-debug.apk
