@@ -21,6 +21,7 @@ import java.util.concurrent.TimeUnit
 class MainActivity : AppCompatActivity() {
 
     companion object {
+
         private const val DERIV_WS =
             "wss://ws.binaryws.com/websockets/v3"
 
@@ -59,7 +60,7 @@ class MainActivity : AppCompatActivity() {
     private val client =
         OkHttpClient.Builder()
             .connectTimeout(
-                15,
+                20,
                 TimeUnit.SECONDS
             )
             .readTimeout(
@@ -67,7 +68,7 @@ class MainActivity : AppCompatActivity() {
                 TimeUnit.MILLISECONDS
             )
             .writeTimeout(
-                15,
+                20,
                 TimeUnit.SECONDS
             )
             .pingInterval(
@@ -89,6 +90,11 @@ class MainActivity : AppCompatActivity() {
 
     private var spinnerInitialized =
         false
+
+    private var reconnectHandler =
+        android.os.Handler(
+            mainLooper
+        )
 
     private val symbols =
         listOf(
@@ -210,9 +216,7 @@ class MainActivity : AppCompatActivity() {
             24
         )
 
-        content.addView(
-            title
-        )
+        content.addView(title)
 
         val pairLabel =
             TextView(this)
@@ -355,7 +359,6 @@ class MainActivity : AppCompatActivity() {
         )
 
         addButton.setOnClickListener {
-
             addAlert()
         }
 
@@ -427,9 +430,7 @@ class MainActivity : AppCompatActivity() {
             historyContainer
         )
 
-        setContentView(
-            root
-        )
+        setContentView(root)
     }
 
     private fun setupSymbolSpinner() {
@@ -450,7 +451,6 @@ class MainActivity : AppCompatActivity() {
             )
 
         if (savedIndex >= 0) {
-
             symbolSpinner.setSelection(
                 savedIndex,
                 false
@@ -458,7 +458,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         symbolSpinner.onItemSelectedListener =
-            object : AdapterView.OnItemSelectedListener {
+            object :
+                AdapterView.OnItemSelectedListener {
 
                 override fun onItemSelected(
                     parent: AdapterView<*>?,
@@ -468,10 +469,7 @@ class MainActivity : AppCompatActivity() {
                 ) {
 
                     if (!spinnerInitialized) {
-
-                        spinnerInitialized =
-                            true
-
+                        spinnerInitialized = true
                         return
                     }
 
@@ -544,13 +542,12 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        isConnecting =
-            true
+        isConnecting = true
 
         runOnUiThread {
 
             statusText.text =
-                "Connecting..."
+                "Connecting to Deriv..."
 
             statusText.setTextColor(
                 android.graphics.Color.DKGRAY
@@ -559,15 +556,18 @@ class MainActivity : AppCompatActivity() {
 
         val request =
             Request.Builder()
-                .url(
-                    DERIV_WS
+                .url(DERIV_WS)
+                .header(
+                    "User-Agent",
+                    "ForexAlert/1.0 Android"
                 )
                 .build()
 
         webSocket =
             client.newWebSocket(
                 request,
-                object : WebSocketListener() {
+                object :
+                    WebSocketListener() {
 
                     override fun onOpen(
                         webSocket: WebSocket,
@@ -576,6 +576,20 @@ class MainActivity : AppCompatActivity() {
 
                         isConnecting =
                             false
+
+                        runOnUiThread {
+
+                            statusText.text =
+                                "Connected - requesting price..."
+
+                            statusText.setTextColor(
+                                android.graphics.Color.rgb(
+                                    0,
+                                    120,
+                                    0
+                                )
+                            )
+                        }
 
                         subscribeToTicks(
                             webSocket
@@ -601,14 +615,30 @@ class MainActivity : AppCompatActivity() {
                         isConnecting =
                             false
 
+                        val responseInfo =
+                            if (
+                                response != null
+                            ) {
+                                " HTTP ${response.code}"
+                            } else {
+                                ""
+                            }
+
+                        val errorMessage =
+                            t.message
+                                ?: t.javaClass.simpleName
+
                         runOnUiThread {
 
                             statusText.text =
-                                "Connection error"
+                                "WebSocket error: $errorMessage$responseInfo"
 
                             statusText.setTextColor(
                                 android.graphics.Color.RED
                             )
+
+                            lastUpdateText.text =
+                                "Endpoint: $DERIV_WS"
                         }
                     }
 
@@ -624,7 +654,7 @@ class MainActivity : AppCompatActivity() {
                         runOnUiThread {
 
                             statusText.text =
-                                "Disconnected"
+                                "Disconnected: $code $reason"
 
                             statusText.setTextColor(
                                 android.graphics.Color.RED
@@ -652,9 +682,28 @@ class MainActivity : AppCompatActivity() {
             1
         )
 
-        socket.send(
-            request.toString()
+        request.put(
+            "req_id",
+            1
         )
+
+        val sent =
+            socket.send(
+                request.toString()
+            )
+
+        if (!sent) {
+
+            runOnUiThread {
+
+                statusText.text =
+                    "Failed to send tick request"
+
+                statusText.setTextColor(
+                    android.graphics.Color.RED
+                )
+            }
+        }
     }
 
     private fun processTickMessage(
@@ -664,18 +713,31 @@ class MainActivity : AppCompatActivity() {
         try {
 
             val json =
-                JSONObject(
-                    message
-                )
+                JSONObject(message)
 
             if (
                 json.has("error")
             ) {
 
+                val error =
+                    json.optJSONObject(
+                        "error"
+                    )
+
+                val code =
+                    error?.optString(
+                        "code"
+                    )
+
+                val messageText =
+                    error?.optString(
+                        "message"
+                    )
+
                 runOnUiThread {
 
                     statusText.text =
-                        "Data error"
+                        "Deriv API error: $code $messageText"
 
                     statusText.setTextColor(
                         android.graphics.Color.RED
@@ -685,29 +747,48 @@ class MainActivity : AppCompatActivity() {
                 return
             }
 
-            if (
+            val messageType =
                 json.optString(
                     "msg_type"
-                ) != "tick"
+                )
+
+            if (
+                messageType != "tick"
             ) {
+
+                runOnUiThread {
+
+                    statusText.text =
+                        "Connected: received $messageType"
+                }
+
                 return
             }
 
             val tick =
                 json.optJSONObject(
                     "tick"
-                ) ?: return
+                )
+
+            if (tick == null) {
+
+                runOnUiThread {
+
+                    statusText.text =
+                        "Tick response has no tick data"
+
+                    statusText.setTextColor(
+                        android.graphics.Color.RED
+                    )
+                }
+
+                return
+            }
 
             val symbol =
                 tick.optString(
                     "symbol"
                 )
-
-            if (
-                symbol != currentSymbol
-            ) {
-                return
-            }
 
             val price =
                 tick.optDouble(
@@ -716,8 +797,25 @@ class MainActivity : AppCompatActivity() {
                 )
 
             if (
+                symbol != currentSymbol
+            ) {
+                return
+            }
+
+            if (
                 !price.isFinite()
             ) {
+
+                runOnUiThread {
+
+                    statusText.text =
+                        "Invalid price received"
+
+                    statusText.setTextColor(
+                        android.graphics.Color.RED
+                    )
+                }
+
                 return
             }
 
@@ -727,7 +825,8 @@ class MainActivity : AppCompatActivity() {
             val epoch =
                 tick.optLong(
                     "epoch",
-                    System.currentTimeMillis() / 1000
+                    System.currentTimeMillis() /
+                        1000
                 )
 
             runOnUiThread {
@@ -739,8 +838,18 @@ class MainActivity : AppCompatActivity() {
             }
 
         } catch (
-            _: Exception
+            e: Exception
         ) {
+
+            runOnUiThread {
+
+                statusText.text =
+                    "Data error: ${e.message}"
+
+                statusText.setTextColor(
+                    android.graphics.Color.RED
+                )
+            }
         }
     }
 
@@ -834,8 +943,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val condition =
-            conditionSpinner
-                .selectedItem
+            conditionSpinner.selectedItem
                 ?.toString()
                 ?: "Above"
 
@@ -879,10 +987,6 @@ class MainActivity : AppCompatActivity() {
             false
         )
 
-        /*
-         * JSONObject does not allow NaN.
-         * Use JSONObject.NULL until the alert triggers.
-         */
         alert.put(
             "triggeredPrice",
             JSONObject.NULL
@@ -912,7 +1016,8 @@ class MainActivity : AppCompatActivity() {
         ).show()
     }
 
-    private fun getAlerts(): JSONArray {
+    private fun getAlerts():
+        JSONArray {
 
         val saved =
             preferences.getString(
@@ -923,7 +1028,6 @@ class MainActivity : AppCompatActivity() {
         if (
             saved.isNullOrEmpty()
         ) {
-
             return JSONArray()
         }
 
@@ -993,7 +1097,8 @@ class MainActivity : AppCompatActivity() {
             val alert =
                 alerts.optJSONObject(
                     i
-                ) ?: continue
+                )
+                    ?: continue
 
             addAlertView(
                 alert
@@ -1060,6 +1165,7 @@ class MainActivity : AppCompatActivity() {
 
             text.text =
                 "$symbol  $condition  $target"
+
         } else {
 
             text.text =
@@ -1195,7 +1301,8 @@ class MainActivity : AppCompatActivity() {
             val alert =
                 alerts.optJSONObject(
                     i
-                ) ?: continue
+                )
+                    ?: continue
 
             if (
                 alert.optLong(
@@ -1244,7 +1351,8 @@ class MainActivity : AppCompatActivity() {
             val alert =
                 oldAlerts.optJSONObject(
                     i
-                ) ?: continue
+                )
+                    ?: continue
 
             if (
                 alert.optLong(
@@ -1347,7 +1455,8 @@ class MainActivity : AppCompatActivity() {
             val item =
                 history.optJSONObject(
                     i
-                ) ?: continue
+                )
+                    ?: continue
 
             val text =
                 TextView(this)
@@ -1489,11 +1598,9 @@ class MainActivity : AppCompatActivity() {
             "Changing symbol"
         )
 
-        webSocket =
-            null
+        webSocket = null
 
-        isConnecting =
-            false
+        isConnecting = false
 
         currentPrice =
             Double.NaN
@@ -1604,13 +1711,16 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
 
+        reconnectHandler.removeCallbacksAndMessages(
+            null
+        )
+
         webSocket?.close(
             1000,
             "Activity destroyed"
         )
 
-        webSocket =
-            null
+        webSocket = null
 
         super.onDestroy()
     }
