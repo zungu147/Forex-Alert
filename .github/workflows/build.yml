@@ -12,20 +12,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+
       - name: Setup JDK
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
+
 
       - name: Create Android project
         run: |
 
           mkdir -p app/src/main/java/com/forexalert/app
           mkdir -p app/src/main/res/values
+
 
           cat > settings.gradle <<'EOF'
           pluginManagement {
@@ -268,7 +272,6 @@ jobs:
 
                   private const val FOREGROUND_ID =
                       5001
-
               }
 
 
@@ -309,13 +312,28 @@ jobs:
 
               private var webSocket: WebSocket? = null
 
+
               private var currentSymbol =
                   "frxEURUSD"
+
+
+              /*
+               * Service lifecycle flag.
+               *
+               * This replaces Activity.isDestroyed,
+               * which is not available inside Service.
+               */
+
+              @Volatile
+              private var serviceRunning =
+                  false
 
 
               override fun onCreate() {
 
                   super.onCreate()
+
+                  serviceRunning = true
 
                   createNotificationChannels()
 
@@ -347,6 +365,7 @@ jobs:
                               EXTRA_SYMBOL
                           )
 
+
                       if (
                           !newSymbol.isNullOrEmpty() &&
                           newSymbol != currentSymbol
@@ -355,14 +374,17 @@ jobs:
                           currentSymbol =
                               newSymbol
 
+
                           webSocket?.close(
                               1000,
                               "Changing symbol"
                           )
 
+
                           connect()
                       }
                   }
+
 
                   return START_STICKY
               }
@@ -375,6 +397,7 @@ jobs:
                           this,
                           MainActivity::class.java
                       )
+
 
                   val pendingIntent =
                       PendingIntent.getActivity(
@@ -447,6 +470,11 @@ jobs:
 
               private fun connect() {
 
+                  if (!serviceRunning) {
+                      return
+                  }
+
+
                   val request =
                       Request.Builder()
 
@@ -462,6 +490,7 @@ jobs:
                           request,
                           object :
                               WebSocketListener() {
+
 
                               override fun onOpen(
                                   webSocket: WebSocket,
@@ -526,8 +555,9 @@ jobs:
                       ) {
                       }
 
+
                       if (
-                          !isDestroyed
+                          serviceRunning
                       ) {
 
                           connect()
@@ -542,15 +572,18 @@ jobs:
                   val request =
                       JSONObject()
 
+
                   request.put(
                       "ticks",
                       currentSymbol
                   )
 
+
                   request.put(
                       "subscribe",
                       1
                   )
+
 
                   webSocket?.send(
                       request.toString()
@@ -568,6 +601,7 @@ jobs:
                           JSONObject(
                               message
                           )
+
 
                       if (
                           json.has("error")
@@ -646,19 +680,23 @@ jobs:
                           ACTION_PRICE_UPDATE
                       )
 
+
                   intent.setPackage(
                       packageName
                   )
+
 
                   intent.putExtra(
                       EXTRA_SYMBOL,
                       symbol
                   )
 
+
                   intent.putExtra(
                       EXTRA_PRICE,
                       price
                   )
+
 
                   sendBroadcast(
                       intent
@@ -685,6 +723,7 @@ jobs:
                               saved
                           )
 
+
                       var changed =
                           false
 
@@ -694,7 +733,9 @@ jobs:
                       ) {
 
                           val item =
-                              array.getJSONObject(i)
+                              array.getJSONObject(
+                                  i
+                              )
 
 
                           if (
@@ -747,7 +788,9 @@ jobs:
 
 
                           val triggered =
-                              when (condition) {
+                              when (
+                                  condition
+                              ) {
 
                                   "Above" ->
                                       price >= target
@@ -768,7 +811,9 @@ jobs:
                               }
 
 
-                          if (!triggered) {
+                          if (
+                              !triggered
+                          ) {
                               continue
                           }
 
@@ -782,10 +827,12 @@ jobs:
                               true
                           )
 
+
                           item.put(
                               "triggeredPrice",
                               price
                           )
+
 
                           item.put(
                               "triggeredTime",
@@ -811,7 +858,9 @@ jobs:
                       }
 
 
-                      if (changed) {
+                      if (
+                          changed
+                      ) {
 
                           preferences.edit()
 
@@ -823,14 +872,19 @@ jobs:
                               .apply()
 
 
-                          sendBroadcast(
+                          val updateIntent =
                               Intent(
                                   ACTION_ALERT_UPDATE
-                              ).apply {
-                                  setPackage(
-                                      packageName
-                                  )
-                              }
+                              )
+
+
+                          updateIntent.setPackage(
+                              packageName
+                          )
+
+
+                          sendBroadcast(
+                              updateIntent
                           )
                       }
 
@@ -882,12 +936,14 @@ jobs:
                           )
                       )
 
+
                       history.put(
                           "symbol",
                           alert.optString(
                               "symbol"
                           )
                       )
+
 
                       history.put(
                           "condition",
@@ -896,6 +952,7 @@ jobs:
                           )
                       )
 
+
                       history.put(
                           "target",
                           alert.optDouble(
@@ -903,10 +960,12 @@ jobs:
                           )
                       )
 
+
                       history.put(
                           "triggeredPrice",
                           price
                       )
+
 
                       history.put(
                           "triggeredTime",
@@ -965,11 +1024,15 @@ jobs:
                       )
 
 
+                  val symbolCode =
+                      alert.optString(
+                          "symbol"
+                      )
+
+
                   val symbol =
                       displaySymbol(
-                          alert.optString(
-                              "symbol"
-                          )
+                          symbolCode
                       )
 
 
@@ -1000,7 +1063,9 @@ jobs:
                           )
 
                           .setContentText(
-                              "$symbol $condition ${formatPrice(target)} — ${formatPrice(price, symbol)}"
+                              "$symbol $condition " +
+                              "${formatPrice(target, symbolCode)} — " +
+                              "${formatPrice(price, symbolCode)}"
                           )
 
                           .setContentIntent(
@@ -1105,7 +1170,9 @@ jobs:
                   symbol: String
               ): String {
 
-                  return when (symbol) {
+                  return when (
+                      symbol
+                  ) {
 
                       "frxEURUSD" ->
                           "EUR/USD"
@@ -1172,14 +1239,20 @@ jobs:
 
               override fun onDestroy() {
 
+                  serviceRunning =
+                      false
+
+
                   webSocket?.close(
                       1000,
                       "Service stopped"
                   )
 
+
                   client.dispatcher
                       .executorService
                       .shutdown()
+
 
                   super.onDestroy()
               }
@@ -1323,6 +1396,7 @@ jobs:
                                           ForexAlertService.EXTRA_SYMBOL
                                       ) ?: return
 
+
                                   val price =
                                       intent.getDoubleExtra(
                                           ForexAlertService.EXTRA_PRICE,
@@ -1339,13 +1413,16 @@ jobs:
                                       currentPrice =
                                           price
 
+
                                       priceText.text =
                                           formatPrice(
                                               price
                                           )
 
+
                                       statusText.text =
                                           "Live"
+
 
                                       statusText.setTextColor(
                                           Color.rgb(
@@ -1387,6 +1464,7 @@ jobs:
 
                   loadHistory()
 
+
                   currentSymbol =
                       preferences.getString(
                           "selected_symbol",
@@ -1405,6 +1483,7 @@ jobs:
               override fun onStart() {
 
                   super.onStart()
+
 
                   val filter =
                       IntentFilter().apply {
@@ -1501,8 +1580,10 @@ jobs:
                   val root =
                       LinearLayout(this)
 
+
                   root.orientation =
                       LinearLayout.VERTICAL
+
 
                   root.setPadding(
                       24,
@@ -1510,6 +1591,7 @@ jobs:
                       24,
                       24
                   )
+
 
                   root.setBackgroundColor(
                       Color.WHITE
@@ -1523,6 +1605,7 @@ jobs:
                   val content =
                       LinearLayout(this)
 
+
                   content.orientation =
                       LinearLayout.VERTICAL
 
@@ -1530,15 +1613,19 @@ jobs:
                   val title =
                       TextView(this)
 
+
                   title.text =
                       "FOREX ALERT"
+
 
                   title.textSize =
                       28f
 
+
                   title.setTextColor(
                       Color.BLACK
                   )
+
 
                   title.gravity =
                       Gravity.CENTER
@@ -1552,11 +1639,14 @@ jobs:
                   val symbolLabel =
                       TextView(this)
 
+
                   symbolLabel.text =
                       "Forex Pair"
 
+
                   symbolLabel.textSize =
                       16f
+
 
                   symbolLabel.setTextColor(
                       Color.DKGRAY
@@ -1569,6 +1659,7 @@ jobs:
                           -1,
                           -2
                       ).apply {
+
                           topMargin = 25
                       }
                   )
@@ -1613,6 +1704,7 @@ jobs:
                       .onItemSelectedListener =
                       object :
                           AdapterView.OnItemSelectedListener {
+
 
                           override fun onNothingSelected(
                               parent: AdapterView<*>?
@@ -1711,15 +1803,19 @@ jobs:
                   priceText =
                       TextView(this)
 
+
                   priceText.text =
                       "--"
+
 
                   priceText.textSize =
                       42f
 
+
                   priceText.setTextColor(
                       Color.BLACK
                   )
+
 
                   priceText.gravity =
                       Gravity.CENTER
@@ -1731,6 +1827,7 @@ jobs:
                           -1,
                           -2
                       ).apply {
+
                           topMargin = 20
                       }
                   )
@@ -1739,15 +1836,19 @@ jobs:
                   statusText =
                       TextView(this)
 
+
                   statusText.text =
                       "Starting monitor..."
+
 
                   statusText.textSize =
                       17f
 
+
                   statusText.setTextColor(
                       Color.GRAY
                   )
+
 
                   statusText.gravity =
                       Gravity.CENTER
@@ -1761,11 +1862,14 @@ jobs:
                   val alertTitle =
                       TextView(this)
 
+
                   alertTitle.text =
                       "Create Price Alert"
 
+
                   alertTitle.textSize =
                       21f
+
 
                   alertTitle.setTextColor(
                       Color.BLACK
@@ -1778,6 +1882,7 @@ jobs:
                           -1,
                           -2
                       ).apply {
+
                           topMargin = 30
                       }
                   )
@@ -1786,11 +1891,14 @@ jobs:
                   val conditionLabel =
                       TextView(this)
 
+
                   conditionLabel.text =
                       "Condition"
 
+
                   conditionLabel.textSize =
                       15f
+
 
                   conditionLabel.setTextColor(
                       Color.DKGRAY
@@ -1826,11 +1934,14 @@ jobs:
                   targetInput =
                       EditText(this)
 
+
                   targetInput.hint =
                       "Target price"
 
+
                   targetInput.textSize =
                       18f
+
 
                   targetInput.inputType =
                       android.text.InputType.TYPE_CLASS_NUMBER or
@@ -1843,6 +1954,7 @@ jobs:
                           -1,
                           -2
                       ).apply {
+
                           topMargin = 10
                       }
                   )
@@ -1851,8 +1963,10 @@ jobs:
                   val addButton =
                       Button(this)
 
+
                   addButton.text =
                       "ADD ALERT"
+
 
                   addButton.setOnClickListener {
 
@@ -1868,11 +1982,14 @@ jobs:
                   val alertsTitle =
                       TextView(this)
 
+
                   alertsTitle.text =
                       "My Alerts"
 
+
                   alertsTitle.textSize =
                       21f
+
 
                   alertsTitle.setTextColor(
                       Color.BLACK
@@ -1885,6 +2002,7 @@ jobs:
                           -1,
                           -2
                       ).apply {
+
                           topMargin = 30
                       }
                   )
@@ -1892,6 +2010,7 @@ jobs:
 
                   alertContainer =
                       LinearLayout(this)
+
 
                   alertContainer.orientation =
                       LinearLayout.VERTICAL
@@ -1905,11 +2024,14 @@ jobs:
                   val historyTitle =
                       TextView(this)
 
+
                   historyTitle.text =
                       "Alert History"
 
+
                   historyTitle.textSize =
                       21f
+
 
                   historyTitle.setTextColor(
                       Color.BLACK
@@ -1922,6 +2044,7 @@ jobs:
                           -1,
                           -2
                       ).apply {
+
                           topMargin = 30
                       }
                   )
@@ -1929,6 +2052,7 @@ jobs:
 
                   historyContainer =
                       LinearLayout(this)
+
 
                   historyContainer.orientation =
                       LinearLayout.VERTICAL
@@ -1942,8 +2066,10 @@ jobs:
                   val clearButton =
                       Button(this)
 
+
                   clearButton.text =
                       "CLEAR HISTORY"
+
 
                   clearButton.setOnClickListener {
 
@@ -2105,19 +2231,24 @@ jobs:
                       val empty =
                           TextView(this)
 
+
                       empty.text =
                           "No alerts for this pair"
 
+
                       empty.textSize =
                           16f
+
 
                       empty.setTextColor(
                           Color.GRAY
                       )
 
+
                       alertContainer.addView(
                           empty
                       )
+
 
                       return
                   }
@@ -2130,8 +2261,10 @@ jobs:
                       val row =
                           LinearLayout(this)
 
+
                       row.orientation =
                           LinearLayout.VERTICAL
+
 
                       row.setPadding(
                           12,
@@ -2144,11 +2277,14 @@ jobs:
                       val description =
                           TextView(this)
 
+
                       description.text =
                           "${alert.condition} ${formatPrice(alert.target)}"
 
+
                       description.textSize =
                           18f
+
 
                       description.setTextColor(
                           Color.BLACK
@@ -2163,6 +2299,7 @@ jobs:
                       val status =
                           TextView(this)
 
+
                       if (
                           alert.triggered
                       ) {
@@ -2172,6 +2309,7 @@ jobs:
                               formatTime(
                                   alert.triggeredTime
                               )
+
 
                           status.setTextColor(
                               Color.rgb(
@@ -2190,6 +2328,7 @@ jobs:
                                   "Enabled"
                               else
                                   "Disabled"
+
 
                           status.setTextColor(
                               if (
@@ -2214,6 +2353,7 @@ jobs:
                       val buttons =
                           LinearLayout(this)
 
+
                       buttons.orientation =
                           LinearLayout.HORIZONTAL
 
@@ -2225,22 +2365,28 @@ jobs:
                           val reset =
                               Button(this)
 
+
                           reset.text =
                               "RESET"
+
 
                           reset.setOnClickListener {
 
                               alert.triggered =
                                   false
 
+
                               alert.triggeredPrice =
                                   Double.NaN
+
 
                               alert.triggeredTime =
                                   0L
 
+
                               alert.enabled =
                                   true
+
 
                               saveAlerts()
 
@@ -2262,6 +2408,7 @@ jobs:
                           val toggle =
                               Button(this)
 
+
                           toggle.text =
                               if (
                                   alert.enabled
@@ -2275,6 +2422,7 @@ jobs:
 
                               alert.enabled =
                                   !alert.enabled
+
 
                               saveAlerts()
 
@@ -2296,8 +2444,10 @@ jobs:
                       val delete =
                           Button(this)
 
+
                       delete.text =
                           "DELETE"
+
 
                       delete.setOnClickListener {
 
@@ -2305,6 +2455,7 @@ jobs:
                               it.id ==
                                   alert.id
                           }
+
 
                           saveAlerts()
 
@@ -2364,19 +2515,24 @@ jobs:
                       val empty =
                           TextView(this)
 
+
                       empty.text =
                           "No triggered alerts"
 
+
                       empty.textSize =
                           16f
+
 
                       empty.setTextColor(
                           Color.GRAY
                       )
 
+
                       historyContainer.addView(
                           empty
                       )
+
 
                       return
                   }
@@ -2389,6 +2545,7 @@ jobs:
                       val text =
                           TextView(this)
 
+
                       text.text =
                           "${displaySymbol(item.symbol)}\n" +
                           "${item.condition} ${formatPrice(item.target)}\n" +
@@ -2397,12 +2554,15 @@ jobs:
                               item.triggeredTime
                           )
 
+
                       text.textSize =
                           15f
+
 
                       text.setTextColor(
                           Color.DKGRAY
                       )
+
 
                       text.setPadding(
                           12,
@@ -2440,25 +2600,30 @@ jobs:
                               alert.id
                           )
 
+
                           item.put(
                               "symbol",
                               alert.symbol
                           )
+
 
                           item.put(
                               "condition",
                               alert.condition
                           )
 
+
                           item.put(
                               "target",
                               alert.target
                           )
 
+
                           item.put(
                               "enabled",
                               alert.enabled
                           )
+
 
                           item.put(
                               "triggered",
@@ -2644,25 +2809,30 @@ jobs:
                               item.id
                           )
 
+
                           objectItem.put(
                               "symbol",
                               item.symbol
                           )
+
 
                           objectItem.put(
                               "condition",
                               item.condition
                           )
 
+
                           objectItem.put(
                               "target",
                               item.target
                           )
 
+
                           objectItem.put(
                               "triggeredPrice",
                               item.triggeredPrice
                           )
+
 
                           objectItem.put(
                               "triggeredTime",
