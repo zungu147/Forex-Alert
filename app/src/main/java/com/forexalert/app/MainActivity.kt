@@ -1,29 +1,33 @@
 package com.forexalert.app
 
 import android.app.Activity
-import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.graphics.Color
+import android.os.Bundle
 import android.view.Gravity
 import android.widget.LinearLayout
 import android.widget.TextView
-import java.net.HttpURLConnection
-import java.net.URL
-import kotlin.concurrent.thread
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import org.json.JSONObject
+import java.util.Locale
 
 class MainActivity : Activity() {
 
-    private lateinit var statusText: TextView
     private lateinit var priceText: TextView
+    private lateinit var statusText: TextView
+    private lateinit var timeText: TextView
 
-    private val handler = Handler(Looper.getMainLooper())
+    private val client = OkHttpClient()
+    private var webSocket: WebSocket? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         createInterface()
-        getPrice()
+        connectToDeriv()
     }
 
     private fun createInterface() {
@@ -50,19 +54,21 @@ class MainActivity : Activity() {
             )
         )
 
-        val symbol = TextView(this)
+        val symbolText = TextView(this)
 
-        symbol.text = "EUR/USD"
-        symbol.textSize = 22f
-        symbol.setTextColor(Color.DKGRAY)
-        symbol.gravity = Gravity.CENTER
+        symbolText.text = "EUR/USD"
+        symbolText.textSize = 22f
+        symbolText.setTextColor(Color.DKGRAY)
+        symbolText.gravity = Gravity.CENTER
 
         root.addView(
-            symbol,
+            symbolText,
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            )
+            ).apply {
+                topMargin = 30
+            }
         )
 
         priceText = TextView(this)
@@ -78,8 +84,7 @@ class MainActivity : Activity() {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply {
-                topMargin = 30
-                bottomMargin = 20
+                topMargin = 20
             }
         )
 
@@ -95,59 +100,184 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            )
+            ).apply {
+                topMargin = 25
+            }
+        )
+
+        timeText = TextView(this)
+
+        timeText.text = ""
+        timeText.textSize = 14f
+        timeText.setTextColor(Color.GRAY)
+        timeText.gravity = Gravity.CENTER
+
+        root.addView(
+            timeText,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = 10
+            }
         )
 
         setContentView(root)
     }
 
-    private fun getPrice() {
+    private fun connectToDeriv() {
 
-        statusText.text = "Getting market price..."
+        runOnUiThread {
+            statusText.text = "Connecting to market data..."
+            statusText.setTextColor(Color.GRAY)
+        }
 
-        thread {
+        val request = Request.Builder()
+            .url("wss://ws.binaryws.com/websockets/v3")
+            .build()
 
-            try {
+        webSocket = client.newWebSocket(
+            request,
+            object : WebSocketListener() {
 
-                val url = URL(
-                    "https://api.deriv.com"
-                )
+                override fun onOpen(
+                    webSocket: WebSocket,
+                    response: Response
+                ) {
 
-                val connection =
-                    url.openConnection() as HttpURLConnection
+                    runOnUiThread {
+                        statusText.text = "Connected"
+                        statusText.setTextColor(Color.rgb(0, 150, 0))
+                    }
 
-                connection.requestMethod = "GET"
-                connection.connectTimeout = 10000
-                connection.readTimeout = 10000
+                    val subscribeRequest = JSONObject()
 
-                connection.connect()
+                    subscribeRequest.put(
+                        "ticks",
+                        "frxEURUSD"
+                    )
 
-                val responseCode = connection.responseCode
+                    subscribeRequest.put(
+                        "subscribe",
+                        1
+                    )
 
-                connection.disconnect()
+                    webSocket.send(
+                        subscribeRequest.toString()
+                    )
+                }
 
-                handler.post {
+                override fun onMessage(
+                    webSocket: WebSocket,
+                    text: String
+                ) {
 
-                    if (responseCode in 200..499) {
+                    processMessage(text)
+                }
 
-                        statusText.text =
-                            "Internet connection available"
+                override fun onClosing(
+                    webSocket: WebSocket,
+                    code: Int,
+                    reason: String
+                ) {
 
-                    } else {
-
-                        statusText.text =
-                            "Connection error"
+                    runOnUiThread {
+                        statusText.text = "Disconnecting..."
+                        statusText.setTextColor(Color.GRAY)
                     }
                 }
 
-            } catch (e: Exception) {
+                override fun onClosed(
+                    webSocket: WebSocket,
+                    code: Int,
+                    reason: String
+                ) {
 
-                handler.post {
+                    runOnUiThread {
+                        statusText.text = "Disconnected"
+                        statusText.setTextColor(Color.RED)
+                    }
+                }
 
-                    statusText.text =
-                        "Unable to connect"
+                override fun onFailure(
+                    webSocket: WebSocket,
+                    t: Throwable,
+                    response: Response?
+                ) {
+
+                    runOnUiThread {
+                        statusText.text =
+                            "Connection failed"
+
+                        statusText.setTextColor(Color.RED)
+                    }
                 }
             }
+        )
+    }
+
+    private fun processMessage(message: String) {
+
+        try {
+
+            val json = JSONObject(message)
+
+            if (json.optString("msg_type") != "tick") {
+                return
+            }
+
+            val tick = json.optJSONObject("tick")
+                ?: return
+
+            val quote = tick.optDouble(
+                "quote",
+                Double.NaN
+            )
+
+            if (quote.isNaN()) {
+                return
+            }
+
+            val epoch = tick.optLong(
+                "epoch",
+                0
+            )
+
+            val price = String.format(
+                Locale.US,
+                "%.5f",
+                quote
+            )
+
+            runOnUiThread {
+
+                priceText.text = price
+
+                if (epoch > 0) {
+                    timeText.text =
+                        "Last update: $epoch"
+                }
+            }
+
+        } catch (e: Exception) {
+
+            runOnUiThread {
+                statusText.text =
+                    "Data error"
+                statusText.setTextColor(Color.RED)
+            }
         }
+    }
+
+    override fun onDestroy() {
+
+        webSocket?.close(
+            1000,
+            "App closed"
+        )
+
+        client.dispatcher.executorService.shutdown()
+
+        super.onDestroy()
     }
 }
